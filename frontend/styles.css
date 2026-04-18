@@ -116,6 +116,13 @@ body {
   margin-top: 1.4rem;
 }
 
+.cli-callout {
+  margin-top: 1.3rem;
+  max-width: 52rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
 .hero-points span,
 .urgency {
   border-radius: 999px;

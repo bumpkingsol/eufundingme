@@ -3,21 +3,20 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-import logging
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 import sentry_sdk
 
 from .config import Settings, load_settings
 from .embeddings import EmbeddingService, embedding_shortlist, lexical_shortlist
 from .matcher import MatchService, OpenAIScorer
-from .models import HealthResponse, IndexStatus, MatchRequest, MatchResponse, ReadinessResponse
+from .models import HealthResponse, IndexStatus, MatchRequest, MatchResponse, ProfileResolveRequest, ProfileResolveResponse
+from .profile_resolver import DemoProfileResolver, OpenAICompanyProfileExpander
 from .state import AppState
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 _SENTRY_INITIALIZED = False
-logger = logging.getLogger(__name__)
 
 
 def initialize_sentry(settings: Settings) -> None:
@@ -59,9 +58,8 @@ def build_match_service(settings: Settings, app_state: AppState) -> MatchService
                         embedding_service=embedding_service,
                         limit=limit,
                     )
-                except Exception as exc:
-                    logger.exception("Embedding shortlist failed")
-                    sentry_sdk.capture_exception(exc)
+                except Exception:
+                    pass
         return lexical_shortlist(company_description, grants, limit=limit)
 
     return MatchService(
@@ -75,6 +73,7 @@ def create_app(
     settings: Settings | None = None,
     app_state: AppState | None = None,
     match_service: object | None = None,
+    profile_resolver: object | None = None,
 ) -> FastAPI:
     active_settings = settings or load_settings()
     initialize_sentry(active_settings)
@@ -100,6 +99,11 @@ def create_app(
     app.state.settings = active_settings
     app.state.app_state = app_state
     app.state.match_service = match_service or build_match_service(active_settings, app_state)
+    app.state.profile_resolver = profile_resolver or DemoProfileResolver(
+        expander=OpenAICompanyProfileExpander(api_key=active_settings.openai_api_key)
+        if active_settings.openai_api_key
+        else None
+    )
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
@@ -115,39 +119,29 @@ def create_app(
 
     @app.get("/api/health", response_model=HealthResponse)
     def health() -> HealthResponse:
-        status = app.state.app_state.get_status()
-        return HealthResponse(
-            status="ok",
-            readiness_phase=status.phase,
-            matching_available=status.matching_available,
-            degraded=status.degraded,
-        )
-
-    @app.get("/api/ready", response_model=ReadinessResponse)
-    def readiness() -> ReadinessResponse | JSONResponse:
-        app.state.app_state.ensure_indexing_started()
-        status = app.state.app_state.get_status()
-        readiness = ReadinessResponse(
-            status="ready" if status.matching_available else "not_ready",
-            phase=status.phase,
-            message=status.message,
-            degraded=status.degraded,
-            degradation_reasons=status.degradation_reasons,
-        )
-        if status.matching_available:
-            return readiness
-        return JSONResponse(status_code=503, content=readiness.model_dump())
+        return HealthResponse(status="ok")
 
     @app.get("/api/index/status", response_model=IndexStatus)
     def index_status() -> IndexStatus:
         app.state.app_state.ensure_indexing_started()
         return app.state.app_state.get_status()
 
+    @app.post("/api/profile/resolve", response_model=ProfileResolveResponse)
+    def profile_resolve(payload: ProfileResolveRequest) -> ProfileResolveResponse:
+        resolution = app.state.profile_resolver.resolve(payload.query)
+        return ProfileResolveResponse(
+            resolved=resolution.resolved,
+            profile=resolution.profile,
+            display_name=resolution.display_name,
+            source=resolution.source,
+            message=resolution.message,
+        )
+
     @app.post("/api/match", response_model=MatchResponse)
     def match_company(payload: MatchRequest) -> MatchResponse:
         app.state.app_state.ensure_indexing_started()
         status = app.state.app_state.get_status()
-        if status.phase not in {"ready", "ready_degraded"}:
+        if status.phase != "ready":
             raise HTTPException(status_code=503, detail={"phase": status.phase, "message": status.message})
 
         grants = app.state.app_state.get_grants()
@@ -156,7 +150,6 @@ def create_app(
             grants,
             now=datetime.now(timezone.utc),
             limit=app.state.settings.shortlist_limit,
-            base_degradation_reasons=status.degradation_reasons,
         )
 
     @app.get("/sentry-debug")

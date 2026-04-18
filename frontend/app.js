@@ -10,6 +10,7 @@ const statusFailures = document.querySelector("#status-failures");
 const statusCoverage = document.querySelector("#status-coverage");
 const statusEmbeddings = document.querySelector("#status-embeddings");
 const statusDegraded = document.querySelector("#status-degraded");
+const resolutionBanner = document.querySelector("#resolution-banner");
 const resultsEmpty = document.querySelector("#results-empty");
 const resultsList = document.querySelector("#results-list");
 const resultsMeta = document.querySelector("#results-meta");
@@ -105,6 +106,36 @@ function renderResults(results, indexedGrants) {
     .join("");
 }
 
+function showResolutionBanner(text) {
+  resolutionBanner.hidden = false;
+  resolutionBanner.textContent = text;
+}
+
+function hideResolutionBanner() {
+  resolutionBanner.hidden = true;
+  resolutionBanner.textContent = "";
+}
+
+function looksLikeCompanyNameInput(value) {
+  const normalizedValue = value.trim();
+  if (!normalizedValue) {
+    return false;
+  }
+  if (normalizedValue.length < MIN_DESCRIPTION_LENGTH) {
+    return true;
+  }
+
+  const words = normalizedValue.split(/\s+/).filter(Boolean);
+  return words.length <= 3 && !/[.,;:!?]/.test(normalizedValue);
+}
+
+function isMatchingAvailable(status) {
+  if (typeof status?.matching_available === "boolean") {
+    return status.matching_available;
+  }
+  return status?.phase === "ready" || status?.phase === "ready_degraded";
+}
+
 function updateStatus(status) {
   latestStatus = status;
   const totalPrefixes = status.total_prefixes || 0;
@@ -128,7 +159,7 @@ function updateStatus(status) {
   statusCoverage.textContent = coverageLabel;
   statusEmbeddings.textContent = status.embeddings_ready ? "ready" : "warming up";
   statusBar.style.width = `${status.phase === "ready" ? 100 : ratio}%`;
-  matchButton.disabled = !status.matching_available;
+  matchButton.disabled = !isMatchingAvailable(status);
 
   if (status.degraded && status.degradation_reasons?.length) {
     statusDegraded.hidden = false;
@@ -148,6 +179,22 @@ function getValidationMessage(errorPayload) {
       .join(". ");
   }
   return errorPayload?.detail?.message || errorPayload?.message || null;
+}
+
+async function resolveCompanyProfile(query) {
+  const response = await fetch("/api/profile/resolve", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ query }),
+  });
+
+  if (!response.ok) {
+    throw new Error("Could not resolve company name.");
+  }
+
+  return response.json();
 }
 
 function scheduleStatusPoll(delayMs) {
@@ -198,16 +245,8 @@ async function fetchStatus() {
 async function submitMatch(event) {
   event.preventDefault();
 
-  const companyDescription = descriptionInput.value.trim();
+  let companyDescription = descriptionInput.value.trim();
   if (!companyDescription) {
-    descriptionInput.focus();
-    return;
-  }
-  if (companyDescription.length < MIN_DESCRIPTION_LENGTH) {
-    resultsEmpty.hidden = false;
-    resultsEmpty.textContent = `Add at least ${MIN_DESCRIPTION_LENGTH} characters so the matcher has enough company context.`;
-    resultsList.innerHTML = "";
-    resultsMeta.textContent = "Company description too short.";
     descriptionInput.focus();
     return;
   }
@@ -216,6 +255,28 @@ async function submitMatch(event) {
   matchButton.textContent = "Matching…";
 
   try {
+    if (looksLikeCompanyNameInput(companyDescription)) {
+      const resolution = await resolveCompanyProfile(companyDescription);
+      if (!resolution.resolved || !resolution.profile) {
+        throw new Error(
+          resolution.message || "Could not expand company name automatically. Add one or two sentences about what the company does.",
+        );
+      }
+
+      companyDescription = resolution.profile;
+      descriptionInput.value = companyDescription;
+      if (resolution.source === "demo_profile") {
+        showResolutionBanner(`Using saved ${resolution.display_name} demo profile.`);
+      } else {
+        showResolutionBanner(`Expanded ${resolution.display_name || "company name"} with AI.`);
+      }
+    } else {
+      hideResolutionBanner();
+      if (companyDescription.length < MIN_DESCRIPTION_LENGTH) {
+        throw new Error(`Add at least ${MIN_DESCRIPTION_LENGTH} characters so the matcher has enough company context.`);
+      }
+    }
+
     const response = await fetch("/api/match", {
       method: "POST",
       headers: {
@@ -239,7 +300,7 @@ async function submitMatch(event) {
     resultsMeta.textContent = "No results available.";
   } finally {
     matchButton.textContent = "Find Grants";
-    matchButton.disabled = latestStatus?.phase !== "ready";
+    matchButton.disabled = !isMatchingAvailable(latestStatus);
   }
 }
 

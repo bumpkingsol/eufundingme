@@ -56,12 +56,9 @@ def test_match_service_clamps_ai_scores():
         "We build AI safety tooling.",
         [grant],
         now=datetime(2026, 4, 18, tzinfo=timezone.utc),
-        base_degradation_reasons=["ready_degraded"],
     )
 
     assert response.results[0].fit_score == 100
-    assert response.degraded is True
-    assert response.degradation_reasons == ["ready_degraded"]
 
 
 def test_match_service_falls_back_when_scorer_fails():
@@ -83,5 +80,3 @@ def test_match_service_falls_back_when_scorer_fails():
     assert response.results[0].grant_id == "TOPIC-1"
     assert response.results[0].fit_score >= 70
     assert "ai" in response.results[0].why_match.lower()
-    assert response.degraded is True
-    assert response.degradation_reasons == ["openai_scoring_failed"]

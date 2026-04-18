@@ -34,6 +34,18 @@
             <span>AI-ranked matches</span>
             <span>Application angle included</span>
           </div>
+
+          <section class="cli-callout">
+            <p class="submit-hint">
+              Agents and automations can use CLI mode:
+              <code>python -m backend.cli match --description "...";</code>
+              plus <code>backend.cli index</code> and <code>backend.cli status</code>.
+            </p>
+            <p class="submit-hint">
+              Resolve names with:
+              <code>python -m backend.cli profile --query "OpenAI"</code>.
+            </p>
+          </section>
         </section>
 
         <section class="workspace">
@@ -43,13 +55,13 @@
               <p>Describe the company, product, market, and strategic focus.</p>
             </div>
 
-            <form id="match-form" class="match-form">
+            <form id="match-form" class="match-form" novalidate>
               <label class="sr-only" for="company-description">Company description</label>
+              <p id="resolution-banner" class="submit-hint" hidden></p>
               <textarea
                 id="company-description"
                 name="company-description"
                 rows="12"
-                minlength="20"
                 placeholder="We build advanced AI safety systems for enterprise deployment across Europe..."
                 required
               ></textarea>

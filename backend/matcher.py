@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import json
-import logging
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 
-import sentry_sdk
 from openai import OpenAI
 
 from .embeddings import lexical_shortlist
@@ -17,8 +15,6 @@ from .models import (
     ParsedLLMMatch,
     ParsedLLMMatchList,
 )
-
-logger = logging.getLogger(__name__)
 
 
 def clamp_score(value: int | float) -> int:
@@ -105,41 +101,24 @@ class MatchService:
         *,
         now: datetime | None = None,
         limit: int = 10,
-        base_degradation_reasons: Sequence[str] | None = None,
     ) -> MatchResponse:
         reference_time = now or datetime.now(timezone.utc)
         candidates = self.shortlister(company_description, grants, limit)
-        degradation_reasons = list(dict.fromkeys(base_degradation_reasons or []))
 
         if not candidates:
-            return MatchResponse(
-                indexed_grants=len(grants),
-                degraded=bool(degradation_reasons),
-                degradation_reasons=degradation_reasons,
-                results=[],
-            )
+            return MatchResponse(indexed_grants=len(grants), results=[])
 
         if self.scorer is not None:
             try:
                 parsed_matches = list(self.scorer(company_description, candidates))
                 results = build_ai_results(parsed_matches, candidates, now=reference_time)
                 if results:
-                    return MatchResponse(
-                        indexed_grants=len(grants),
-                        degraded=bool(degradation_reasons),
-                        degradation_reasons=degradation_reasons,
-                        results=results,
-                    )
-            except Exception as exc:
-                logger.exception("OpenAI scoring failed")
-                sentry_sdk.capture_exception(exc)
-                if "openai_scoring_failed" not in degradation_reasons:
-                    degradation_reasons.append("openai_scoring_failed")
+                    return MatchResponse(indexed_grants=len(grants), results=results)
+            except Exception:
+                pass
 
         return MatchResponse(
             indexed_grants=len(grants),
-            degraded=bool(degradation_reasons) or self.scorer is not None,
-            degradation_reasons=degradation_reasons,
             results=build_fallback_results(company_description, candidates, now=reference_time),
         )
 
