@@ -154,6 +154,110 @@ def test_app_state_uses_bundled_seed_when_runtime_snapshot_invalid(tmp_path):
     assert state.get_grants()[0].id == "TOPIC-SEED"
 
 
+def test_app_state_prefers_bundled_seed_when_it_has_more_grants_than_runtime_snapshot(tmp_path):
+    snapshot_path = tmp_path / "grant-index.json"
+    seed_path = tmp_path / "grant-index.seed.json"
+    settings = make_settings(snapshot_path)
+
+    IndexSnapshotStore(snapshot_path).save(
+        grants=[make_grant("TOPIC-RUNTIME")],
+        embeddings={},
+        status_payload={
+            "phase": "ready",
+            "message": "Runtime index ready",
+            "indexed_grants": 1,
+            "scanned_prefixes": 1,
+            "total_prefixes": 1,
+            "failed_prefixes": 0,
+            "truncated_prefixes": 0,
+            "embeddings_ready": False,
+            "degraded": False,
+            "coverage_complete": True,
+            "matching_available": True,
+            "degradation_reasons": [],
+        },
+        written_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+    )
+    IndexSnapshotStore(seed_path).save(
+        grants=[make_grant("TOPIC-SEED-1"), make_grant("TOPIC-SEED-2")],
+        embeddings={},
+        status_payload={
+            "phase": "ready",
+            "message": "Bundled seed ready",
+            "indexed_grants": 2,
+            "scanned_prefixes": 1,
+            "total_prefixes": 1,
+            "failed_prefixes": 0,
+            "truncated_prefixes": 0,
+            "embeddings_ready": False,
+            "degraded": False,
+            "coverage_complete": True,
+            "matching_available": True,
+            "degradation_reasons": [],
+        },
+        written_at=datetime.now(timezone.utc) - timedelta(minutes=10),
+    )
+
+    state = AppState(settings=settings, prefixes=["AI-2026"])
+    status = state.get_status()
+
+    assert status.snapshot_loaded is True
+    assert status.snapshot_source == "bundled"
+    assert [grant.id for grant in state.get_grants()] == ["TOPIC-SEED-1", "TOPIC-SEED-2"]
+
+
+def test_app_state_prefers_runtime_snapshot_when_it_is_at_least_as_large_as_bundled_seed(tmp_path):
+    snapshot_path = tmp_path / "grant-index.json"
+    seed_path = tmp_path / "grant-index.seed.json"
+    settings = make_settings(snapshot_path)
+
+    IndexSnapshotStore(snapshot_path).save(
+        grants=[make_grant("TOPIC-RUNTIME-1"), make_grant("TOPIC-RUNTIME-2")],
+        embeddings={},
+        status_payload={
+            "phase": "ready",
+            "message": "Runtime index ready",
+            "indexed_grants": 2,
+            "scanned_prefixes": 1,
+            "total_prefixes": 1,
+            "failed_prefixes": 0,
+            "truncated_prefixes": 0,
+            "embeddings_ready": False,
+            "degraded": False,
+            "coverage_complete": True,
+            "matching_available": True,
+            "degradation_reasons": [],
+        },
+        written_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+    )
+    IndexSnapshotStore(seed_path).save(
+        grants=[make_grant("TOPIC-SEED-1")],
+        embeddings={},
+        status_payload={
+            "phase": "ready",
+            "message": "Bundled seed ready",
+            "indexed_grants": 1,
+            "scanned_prefixes": 1,
+            "total_prefixes": 1,
+            "failed_prefixes": 0,
+            "truncated_prefixes": 0,
+            "embeddings_ready": False,
+            "degraded": False,
+            "coverage_complete": True,
+            "matching_available": True,
+            "degradation_reasons": [],
+        },
+        written_at=datetime.now(timezone.utc) - timedelta(minutes=10),
+    )
+
+    state = AppState(settings=settings, prefixes=["AI-2026"])
+    status = state.get_status()
+
+    assert status.snapshot_loaded is True
+    assert status.snapshot_source == "runtime"
+    assert [grant.id for grant in state.get_grants()] == ["TOPIC-RUNTIME-1", "TOPIC-RUNTIME-2"]
+
+
 def test_app_state_preserves_snapshot_during_refresh_failure(tmp_path):
     snapshot_path = tmp_path / "grant-index.json"
     settings = make_settings(snapshot_path)
