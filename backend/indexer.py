@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 from .ec_client import ECSearchClient
 from .models import GrantRecord
-from .normalize import normalize_grant
+from .normalize import is_code_like_label, is_numericish, normalize_grant
 
 CALL_PREFIXES = [
     "HORIZON-CL1-2026",
@@ -63,20 +63,37 @@ def filter_indexable_grants(
     now: datetime | None = None,
 ) -> list[GrantRecord]:
     reference_time = now or datetime.now(timezone.utc)
-    seen_ids: set[str] = set()
-    kept: list[GrantRecord] = []
+    best_by_id: dict[str, GrantRecord] = {}
+    order: list[str] = []
 
     for grant in grants:
-        if not grant.id or grant.id in seen_ids:
+        if not grant.id:
             continue
         if grant.status not in {"Open", "Forthcoming"}:
             continue
         if grant.deadline_at is not None and grant.deadline_at < reference_time:
             continue
-        seen_ids.add(grant.id)
-        kept.append(grant)
+        existing = best_by_id.get(grant.id)
+        if existing is None:
+            best_by_id[grant.id] = grant
+            order.append(grant.id)
+            continue
+        if grant_quality_score(grant) > grant_quality_score(existing):
+            best_by_id[grant.id] = grant
 
-    return kept
+    return [best_by_id[grant_id] for grant_id in order]
+
+
+def grant_quality_score(grant: GrantRecord) -> int:
+    score = 0
+    if grant.framework_programme and not is_numericish(grant.framework_programme):
+        score += 3
+    if grant.programme_division and not is_numericish(grant.programme_division):
+        score += 2
+    if "topic-details" in grant.portal_url:
+        score += 1
+    score += sum(1 for keyword in grant.keywords if not is_code_like_label(keyword))
+    return score
 
 
 def build_grant_index(
