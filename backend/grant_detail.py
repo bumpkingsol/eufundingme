@@ -5,73 +5,126 @@ from html import unescape
 
 from .models import GrantDetailResponse
 
-_TAG_RE = re.compile(r"<[^>]+>")
-_LIST_ITEM_RE = re.compile(r"<li[^>]*>(.*?)</li>", re.IGNORECASE | re.DOTALL)
+TAG_PATTERN = re.compile(r"<[^>]+>")
+LIST_ITEM_PATTERN = re.compile(r"<li[^>]*>(.*?)</li>", flags=re.IGNORECASE | re.DOTALL)
+WHITESPACE_PATTERN = re.compile(r"\s+")
 
 
-def _clean_html_text(value: str) -> str:
-    text = _TAG_RE.sub(" ", value)
-    text = unescape(text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
-
-
-def _extract_list(value: object) -> list[str]:
-    if isinstance(value, list):
-        return [_clean_html_text(str(item)) for item in value if _clean_html_text(str(item))]
+def strip_html_to_text(value: object) -> str:
     if not isinstance(value, str):
-        return []
-    list_items = [_clean_html_text(match) for match in _LIST_ITEM_RE.findall(value)]
-    if list_items:
-        return [item for item in list_items if item]
-    cleaned = _clean_html_text(value)
-    return [cleaned] if cleaned else []
+        return ""
+    text = TAG_PATTERN.sub(" ", unescape(value))
+    return WHITESPACE_PATTERN.sub(" ", text).strip()
 
 
 def normalize_topic_detail_payload(payload: dict[str, object], *, topic_id: str) -> GrantDetailResponse:
     topic_details = payload.get("topicDetails") if isinstance(payload, dict) else None
-    topic_details = topic_details if isinstance(topic_details, dict) else {}
-    summary = topic_details.get("summary") if isinstance(topic_details.get("summary"), dict) else {}
-    sections = topic_details.get("sections") if isinstance(topic_details.get("sections"), dict) else {}
+    summary = topic_details.get("summary") if isinstance(topic_details, dict) else None
+    sections = topic_details.get("sections") if isinstance(topic_details, dict) else None
 
-    full_description = _clean_html_text(str(sections.get("objective", "")))
-    expected_outcomes = _extract_list(sections.get("expectedOutcomes"))
-    eligibility_criteria = _extract_list(sections.get("eligibilityConditions"))
-
-    submission_conditions = (
-        sections.get("submissionConditions")
-        if isinstance(sections.get("submissionConditions"), dict)
-        else {}
-    )
-    deadline_source = submission_conditions.get("deadlineDate") or summary.get("deadlineDate")
-    submission_deadlines: list[dict[str, str]] = []
-    if isinstance(deadline_source, str) and deadline_source:
-        submission_deadlines.append(
-            {
-                "label": "Main deadline",
-                "value": deadline_source[:10],
-            }
-        )
-
-    documents_payload = sections.get("documents")
-    documents: list[dict[str, str]] = []
-    if isinstance(documents_payload, list):
-        for item in documents_payload:
-            if not isinstance(item, dict):
-                continue
-            title = item.get("title")
-            url = item.get("url")
-            if isinstance(title, str) and isinstance(url, str):
-                documents.append({"title": title, "url": url})
+    if not isinstance(summary, dict):
+        summary = {}
+    if not isinstance(sections, dict):
+        sections = {}
 
     return GrantDetailResponse(
-        grant_id=topic_id,
-        full_description=full_description,
-        eligibility_criteria=eligibility_criteria,
-        submission_deadlines=submission_deadlines,
-        expected_outcomes=expected_outcomes,
-        documents=documents,
-        partner_search_available=bool(sections.get("partnerSearch")),
+        grant_id=str(summary.get("identifier") or topic_id),
+        full_description=strip_html_to_text(sections.get("objective") or sections.get("description")),
+        eligibility_criteria=_normalize_text_list(sections.get("eligibilityConditions")),
+        submission_deadlines=_normalize_deadlines(sections.get("submissionConditions"), summary),
+        expected_outcomes=_normalize_text_list(sections.get("expectedOutcomes")),
+        documents=_normalize_documents(sections.get("documents")),
+        partner_search_available=_normalize_bool(sections.get("partnerSearch")),
         source="browser_topic_detail",
         fallback_used=False,
     )
+
+
+def build_fallback_grant_detail(match_result: dict[str, object]) -> GrantDetailResponse:
+    deadline = match_result.get("deadline")
+    return GrantDetailResponse(
+        grant_id=str(match_result.get("grant_id") or ""),
+        full_description="",
+        eligibility_criteria=[],
+        submission_deadlines=(
+            [{"label": "Main deadline", "value": deadline}]
+            if isinstance(deadline, str) and deadline
+            else []
+        ),
+        expected_outcomes=[],
+        documents=[],
+        partner_search_available=None,
+        source="match_result_fallback",
+        fallback_used=True,
+    )
+
+
+def _normalize_text_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        values = value
+    elif value is None:
+        values = []
+    else:
+        values = [value]
+
+    items: list[str] = []
+    for entry in values:
+        if isinstance(entry, str) and "<li" in entry.lower():
+            items.extend(_extract_list_items(entry))
+            continue
+        text = strip_html_to_text(entry)
+        if text:
+            items.append(text)
+    return list(dict.fromkeys(items))
+
+
+def _extract_list_items(value: str) -> list[str]:
+    parts = LIST_ITEM_PATTERN.findall(value)
+    if not parts:
+        text = strip_html_to_text(value)
+        return [text] if text else []
+    return [item for part in parts if (item := strip_html_to_text(part))]
+
+
+def _normalize_deadlines(value: object, summary: dict[str, object]) -> list[dict[str, str]]:
+    deadlines: list[tuple[str, str]] = []
+    if isinstance(value, dict):
+        detail_deadline = _date_only(value.get("deadlineDate"))
+        if detail_deadline:
+            deadlines.append(("Main deadline", detail_deadline))
+    summary_deadline = _date_only(summary.get("deadlineDate"))
+    if summary_deadline and ("Main deadline", summary_deadline) not in deadlines:
+        deadlines.append(("Main deadline", summary_deadline))
+    return [{"label": label, "value": deadline} for label, deadline in deadlines]
+
+
+def _normalize_documents(value: object) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    documents: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        title = item.get("title")
+        url = item.get("url")
+        if isinstance(title, str) and isinstance(url, str) and title and url:
+            documents.append({"title": title, "url": url})
+    return documents
+
+
+def _normalize_bool(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes"}:
+            return True
+        if lowered in {"false", "0", "no"}:
+            return False
+    return None
+
+
+def _date_only(value: object) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    return value[:10]

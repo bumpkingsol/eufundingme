@@ -434,6 +434,58 @@ def test_match_endpoint_includes_request_id_header_override():
     assert payload["detail"]["request_id"] == "agent-run-override"
 
 
+def test_match_endpoint_records_embedding_cache_measurement(monkeypatch):
+    class FakeState:
+        def ensure_indexing_started(self) -> None:
+            return None
+
+        def get_status(self) -> IndexStatus:
+            return IndexStatus(
+                phase="ready",
+                message="Ready",
+                indexed_grants=32,
+                scanned_prefixes=10,
+                total_prefixes=10,
+                failed_prefixes=0,
+                truncated_prefixes=0,
+                embeddings_ready=True,
+                degraded=False,
+                coverage_complete=True,
+                matching_available=True,
+                degradation_reasons=[],
+            )
+
+        def get_grants(self) -> list[object]:
+            return ["placeholder"]
+
+    class FakeMatchService:
+        def match(
+            self,
+            company_description: str,
+            grants: list[object],
+            now=None,
+            limit: int = 10,
+            base_degradation_reasons=None,
+        ) -> MatchResponse:
+            return MatchResponse(indexed_grants=32, degraded=False, degradation_reasons=[], results=[])
+
+    measurements = []
+    monkeypatch.setattr(
+        "backend.app.sentry_sdk.set_measurement",
+        lambda name, value: measurements.append((name, value)),
+    )
+
+    client = TestClient(create_app(app_state=FakeState(), match_service=FakeMatchService()))
+
+    response = client.post(
+        "/api/match",
+        json={"company_description": "We build AI safety tooling across Europe."},
+    )
+
+    assert response.status_code == 200
+    assert ("embedding_cache_hit_rate", 1.0) in measurements
+
+
 def test_sentry_debug_route_exists():
     client = TestClient(create_app(), raise_server_exceptions=False)
 

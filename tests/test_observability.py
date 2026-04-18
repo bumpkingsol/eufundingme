@@ -1,5 +1,5 @@
 from backend.config import Settings
-from backend.observability import build_traces_sampler, initialize_sentry, scrub_sentry_event
+from backend.observability import bind_request_context, build_traces_sampler, initialize_sentry, scrub_sentry_event
 
 
 def test_scrub_sentry_event_removes_request_body_and_sensitive_headers():
@@ -58,3 +58,41 @@ def test_initialize_sentry_uses_explicit_integrations_and_safe_defaults(monkeypa
     assert "FastApiIntegration" in integration_names
     assert "OpenAIIntegration" in integration_names
     assert callable(captured["traces_sampler"])
+
+
+def test_bind_request_context_sets_request_tags_context_and_user(monkeypatch):
+    captured_tags = []
+    captured_contexts = []
+    captured_users = []
+
+    monkeypatch.setattr(
+        "backend.observability.sentry_sdk.set_tag",
+        lambda key, value: captured_tags.append((key, value)),
+    )
+    monkeypatch.setattr(
+        "backend.observability.sentry_sdk.set_context",
+        lambda key, value: captured_contexts.append((key, value)),
+    )
+    monkeypatch.setattr(
+        "backend.observability.sentry_sdk.set_user",
+        lambda value: captured_users.append(value),
+    )
+
+    bind_request_context(
+        operation="match",
+        request_id="req-123",
+        model="gpt-5.4-mini-2026-03-17",
+    )
+
+    assert ("operation", "match") in captured_tags
+    assert ("request_id", "req-123") in captured_tags
+    assert ("model", "gpt-5.4-mini-2026-03-17") in captured_tags
+    assert captured_contexts == [(
+        "request_context",
+        {
+            "operation": "match",
+            "request_id": "req-123",
+            "model": "gpt-5.4-mini-2026-03-17",
+        },
+    )]
+    assert captured_users == [{"id": "req-123"}]

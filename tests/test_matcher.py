@@ -156,3 +156,68 @@ def test_openai_scorer_uses_responses_api_with_reasoning_effort():
     instructions = fake_responses.calls[0]["instructions"]
     assert "specific grant requirements" in instructions
     assert "specific company capabilities" in instructions
+
+
+def test_match_service_emits_sentry_spans_and_measurements(monkeypatch):
+    class FakeSpan:
+        def __init__(self, op: str, name: str) -> None:
+            self.op = op
+            self.name = name
+            self.data = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        def set_data(self, key: str, value) -> None:
+            self.data[key] = value
+
+    grant = make_grant("TOPIC-1", "AI Safety Grant", keywords=["ai", "safety"])
+    spans = []
+    measurements = []
+    perf_counter_values = iter([100.0, 100.25])
+
+    monkeypatch.setattr(
+        "backend.matcher.sentry_sdk.start_span",
+        lambda *, op, name: spans.append(FakeSpan(op, name)) or spans[-1],
+    )
+    monkeypatch.setattr(
+        "backend.matcher.sentry_sdk.set_measurement",
+        lambda name, value: measurements.append((name, value)),
+    )
+    monkeypatch.setattr(
+        "backend.matcher.time.perf_counter",
+        lambda: next(perf_counter_values),
+    )
+
+    service = MatchService(
+        shortlister=lambda company_description, grants, limit: [
+            MatchCandidate(grant=grant, shortlist_score=0.9)
+        ],
+        scorer=lambda company_description, candidates: [
+            ParsedLLMMatch(
+                grant_id="TOPIC-1",
+                fit_score=92,
+                why_match="Strong overlap in applied AI safety.",
+                application_angle="Lead with trusted deployment across Europe.",
+            )
+        ],
+    )
+
+    response = service.match(
+        "We build AI safety tooling.",
+        [grant],
+        now=datetime(2026, 4, 18, tzinfo=timezone.utc),
+    )
+
+    assert response.results[0].grant_id == "TOPIC-1"
+    assert [(span.op, span.name) for span in spans] == [
+        ("ai.shortlist", "Candidate shortlist"),
+        ("ai.score", "LLM candidate scoring"),
+    ]
+    assert spans[0].data == {"grant_count": 1, "candidate_count": 1}
+    assert spans[1].data == {"candidate_count": 1, "matches_returned": 1}
+    assert ("grants_indexed", 1) in measurements
+    assert ("match_latency_ms", 250.0) in measurements

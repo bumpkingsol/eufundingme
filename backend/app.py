@@ -4,9 +4,11 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+import sentry_sdk
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
+from .application_brief import ApplicationBriefService
 from .config import Settings, load_settings
 from .embeddings import EmbeddingService, embedding_shortlist, lexical_shortlist
 from .matcher import MatchService, OpenAIScorer
@@ -140,6 +142,11 @@ def create_app(
     app.state.settings = active_settings
     app.state.app_state = app_state
     app.state.match_service = match_service or build_match_service(active_settings, app_state)
+    app.state.application_brief_service = ApplicationBriefService(
+        client=build_openai_client(active_settings),
+        model=active_settings.openai_match_model,
+        reasoning_effort=active_settings.openai_match_reasoning_effort,
+    )
     app.state.profile_resolver = profile_resolver or DemoProfileResolver(
         expander=OpenAICompanyProfileExpander(
             api_key=active_settings.openai_api_key,
@@ -258,6 +265,7 @@ def create_app(
             limit=app.state.settings.shortlist_limit,
             base_degradation_reasons=status.degradation_reasons,
         )
+        sentry_sdk.set_measurement("embedding_cache_hit_rate", 1.0 if status.embeddings_ready else 0.0)
         return match_response.model_copy(update={"request_id": request_id})
 
     @app.post("/api/application-brief", response_model=ApplicationBriefResponse)

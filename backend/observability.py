@@ -71,6 +71,7 @@ def bind_request_context(
     sentry_sdk.set_tag("request_id", request_id)
     if model:
         sentry_sdk.set_tag("model", model)
+    sentry_sdk.set_user({"id": request_id})
     sentry_sdk.set_context(
         "request_context",
         {

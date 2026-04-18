@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 
+import sentry_sdk
 from openai import OpenAI
 
 from .embeddings import lexical_shortlist
@@ -103,51 +105,65 @@ class MatchService:
         limit: int = 10,
         base_degradation_reasons: Sequence[str] | None = None,
     ) -> MatchResponse:
+        started_at = time.perf_counter()
         reference_time = now or datetime.now(timezone.utc)
         degradation_reasons = list(base_degradation_reasons or [])
-        candidates = self.shortlister(company_description, grants, limit)
+        try:
+            with sentry_sdk.start_span(op="ai.shortlist", name="Candidate shortlist") as span:
+                candidates = self.shortlister(company_description, grants, limit)
+                span.set_data("grant_count", len(grants))
+                span.set_data("candidate_count", len(candidates))
 
-        if not candidates:
+            if not candidates:
+                return MatchResponse(
+                    indexed_grants=len(grants),
+                    refresh_indexed_grants=len(grants),
+                    degraded=bool(degradation_reasons),
+                    degradation_reasons=degradation_reasons,
+                    results=[],
+                )
+
+            if self.scorer is not None:
+                try:
+                    with sentry_sdk.start_span(op="ai.score", name="LLM candidate scoring") as span:
+                        span.set_data("candidate_count", len(candidates))
+                        parsed_matches = list(self.scorer(company_description, candidates))
+                        span.set_data("matches_returned", len(parsed_matches))
+                    results = build_ai_results(parsed_matches, candidates, now=reference_time)
+                    if results:
+                        return MatchResponse(
+                            indexed_grants=len(grants),
+                            refresh_indexed_grants=len(grants),
+                            degraded=bool(degradation_reasons),
+                            degradation_reasons=degradation_reasons,
+                            results=results,
+                        )
+                except Exception as exc:
+                    if self.on_scorer_failure is not None:
+                        self.on_scorer_failure(
+                            exc,
+                            context={
+                                "candidate_count": len(candidates),
+                                "grant_count": len(grants),
+                                "fallback_used": True,
+                            },
+                        )
+                    if "openai_scoring_failed" not in degradation_reasons:
+                        degradation_reasons.append("openai_scoring_failed")
+
             return MatchResponse(
                 indexed_grants=len(grants),
                 refresh_indexed_grants=len(grants),
                 degraded=bool(degradation_reasons),
                 degradation_reasons=degradation_reasons,
-                results=[],
+                results=build_fallback_results(company_description, candidates, now=reference_time),
             )
-
-        if self.scorer is not None:
-            try:
-                parsed_matches = list(self.scorer(company_description, candidates))
-                results = build_ai_results(parsed_matches, candidates, now=reference_time)
-                if results:
-                    return MatchResponse(
-                        indexed_grants=len(grants),
-                        refresh_indexed_grants=len(grants),
-                        degraded=bool(degradation_reasons),
-                        degradation_reasons=degradation_reasons,
-                        results=results,
-                    )
-            except Exception as exc:
-                if self.on_scorer_failure is not None:
-                    self.on_scorer_failure(
-                        exc,
-                        context={
-                            "candidate_count": len(candidates),
-                            "grant_count": len(grants),
-                            "fallback_used": True,
-                        },
-                    )
-                if "openai_scoring_failed" not in degradation_reasons:
-                    degradation_reasons.append("openai_scoring_failed")
-
-        return MatchResponse(
-            indexed_grants=len(grants),
-            refresh_indexed_grants=len(grants),
-            degraded=bool(degradation_reasons),
-            degradation_reasons=degradation_reasons,
-            results=build_fallback_results(company_description, candidates, now=reference_time),
-        )
+        finally:
+            sentry_sdk.set_measurement("grants_indexed", len(grants))
+            sentry_sdk.set_measurement(
+                "match_latency_ms",
+                round((time.perf_counter() - started_at) * 1000, 3),
+            )
 
 
 def build_ai_results(

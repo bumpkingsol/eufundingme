@@ -68,6 +68,10 @@ const selectorIds = [
   "company-description",
   "match-button",
   "quick-fill-openai",
+  "dashboard-total-grants",
+  "dashboard-programmes",
+  "dashboard-budget",
+  "dashboard-deadline",
   "agent-handoff-copy",
   "agent-handoff-status",
   "agent-handoff-instructions",
@@ -89,6 +93,12 @@ const selectorIds = [
   "results-empty",
   "results-list",
   "results-meta",
+  "comparison-panel",
+  "comparison-empty",
+  "comparison-table",
+  "alert-form",
+  "alert-email",
+  "alert-status",
 ];
 
 for (const id of selectorIds) {{
@@ -106,6 +116,7 @@ const document = {{
 }};
 
 const clipboardWrites = [];
+const openedWindows = [];
 const navigator = {{
   clipboard: {{
     async writeText(value) {{
@@ -142,6 +153,7 @@ async function flushTimers(maxSteps = 1) {{
 
 const fetchCalls = [];
 const profileResolvers = [];
+const detailResponses = new Map();
 let statusResponse = {{
   ok: true,
   json: async () => ({{
@@ -163,6 +175,20 @@ let matchResponse = {{
   ok: true,
   json: async () => ({{ indexed_grants: 42, results: [] }}),
 }};
+let briefResponse = {{
+  ok: true,
+  json: async () => ({{
+    markdown: "# Brief",
+    html: "<article>Brief</article>",
+    sections: {{
+      company_fit_summary: "Strong fit",
+      key_requirements: ["Requirement 1"],
+      suggested_consortium_partners: ["Partner 1"],
+      timeline: ["Week 1"],
+      risks_and_gaps: ["Risk 1"],
+    }},
+  }}),
+}};
 
 async function fetchMock(url, options = {{}}) {{
   fetchCalls.push({{ url, options }});
@@ -178,6 +204,12 @@ async function fetchMock(url, options = {{}}) {{
   if (url === "/api/match") {{
     return matchResponse;
   }}
+  if (url === "/api/application-brief") {{
+    return briefResponse;
+  }}
+  if (detailResponses.has(url)) {{
+    return detailResponses.get(url);
+  }}
   throw new Error(`Unhandled fetch: ${{url}}`);
 }}
 
@@ -190,6 +222,23 @@ const context = {{
     setTimeout: setTimeoutMock,
     clearTimeout: clearTimeoutMock,
     navigator,
+    open() {{
+      const popup = {{
+        html: "",
+        printCalled: false,
+        document: {{
+          write(value) {{
+            popup.html += value;
+          }},
+          close() {{}},
+        }},
+        print() {{
+          popup.printCalled = true;
+        }},
+      }};
+      openedWindows.push(popup);
+      return popup;
+    }},
   }},
   setTimeout: setTimeoutMock,
   clearTimeout: clearTimeoutMock,
@@ -214,9 +263,25 @@ const resolutionBanner = elements.get("resolution-banner");
 const resultsEmpty = elements.get("results-empty");
 const resultsList = elements.get("results-list");
 const resultsMeta = elements.get("results-meta");
+const comparisonPanel = elements.get("comparison-panel");
+const comparisonEmpty = elements.get("comparison-empty");
+const comparisonTable = elements.get("comparison-table");
+const alertForm = elements.get("alert-form");
+const alertEmail = elements.get("alert-email");
+const alertStatus = elements.get("alert-status");
 
 function queueProfileResponse(factory) {{
   profileResolvers.push(factory);
+}}
+
+function queueDetailResponse(topicId, payload) {{
+  detailResponses.set(
+    `https://ec.europa.eu/info/funding-tenders/opportunities/data/topicDetails/${{topicId}}.json`,
+    {{
+      ok: true,
+      json: async () => payload,
+    }},
+  );
 }}
 
 function profileJsonResponse(payload) {{
@@ -669,6 +734,221 @@ if (!handoffInstructions.value.includes("INDEX_NOT_READY")) {
 }
 if (fetchCalls.some((call) => call.url === "/api/match")) {
   throw new Error("Agent handoff should not trigger match requests on load");
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_renders_dashboard_summary_from_status():
+    script = build_frontend_harness(
+        """
+statusResponse = {
+  ok: true,
+  json: async () => ({
+    phase: "ready",
+    message: "Index ready",
+    indexed_grants: 42,
+    scanned_prefixes: 10,
+    total_prefixes: 10,
+    failed_prefixes: 0,
+    truncated_prefixes: 0,
+    embeddings_ready: true,
+    matching_available: true,
+    coverage_complete: true,
+    degraded: false,
+    degradation_reasons: [],
+    summary: {
+      total_grants: 42,
+      programme_count: 5,
+      total_budget_display: "EUR 380M",
+      closest_deadline_days: 3,
+    },
+  }),
+};
+
+appContext.updateStatus(await statusResponse.json());
+
+if (elements.get("dashboard-total-grants").textContent !== "42 grants indexed") {
+  throw new Error(`Unexpected grants summary: ${elements.get("dashboard-total-grants").textContent}`);
+}
+if (elements.get("dashboard-programmes").textContent !== "5 programmes") {
+  throw new Error(`Unexpected programme summary: ${elements.get("dashboard-programmes").textContent}`);
+}
+if (elements.get("dashboard-budget").textContent !== "EUR 380M total available") {
+  throw new Error(`Unexpected budget summary: ${elements.get("dashboard-budget").textContent}`);
+}
+if (elements.get("dashboard-deadline").textContent !== "Closest deadline: 3 days") {
+  throw new Error(`Unexpected deadline summary: ${elements.get("dashboard-deadline").textContent}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_fetches_grant_details_and_caches_repeat_expansions():
+    script = build_frontend_harness(
+        """
+appContext.renderResults([
+  {
+    grant_id: "TOPIC-1",
+    title: "AI Grant",
+    status: "Open",
+    deadline: "2026-08-01",
+    days_left: 20,
+    budget: "EUR 5M",
+    portal_url: "https://example.com/TOPIC-1",
+    fit_score: 90,
+    why_match: "Strong fit",
+    application_angle: "Lead with deployment",
+    framework_programme: "Horizon Europe",
+    programme_division: "Cluster 4",
+    keywords: ["ai"],
+  }
+], 42);
+
+queueDetailResponse("TOPIC-1", {
+  topicDetails: {
+    summary: { identifier: "TOPIC-1", deadlineDate: "2026-08-01T17:00:00Z" },
+    sections: {
+      objective: "<p>Detailed grant description.</p>",
+      expectedOutcomes: ["<p>Outcome A</p>"],
+      eligibilityConditions: "<ul><li>EU entity</li></ul>",
+      documents: [{ title: "Guide", url: "https://example.com/guide.pdf" }],
+      partnerSearch: true,
+    },
+  },
+});
+
+await appContext.toggleGrantDetails("TOPIC-1");
+await appContext.toggleGrantDetails("TOPIC-1");
+await appContext.toggleGrantDetails("TOPIC-1");
+
+const detailCalls = fetchCalls.filter((call) => call.url.includes("topicDetails/TOPIC-1.json"));
+if (detailCalls.length !== 1) {
+  throw new Error(`Expected one topic detail fetch, got ${detailCalls.length}`);
+}
+if (!resultsList.innerHTML.includes("Detailed grant description.")) {
+  throw new Error(`Expected detail content in results markup: ${resultsList.innerHTML}`);
+}
+if (!resultsList.innerHTML.includes("EU entity")) {
+  throw new Error(`Expected eligibility content in results markup: ${resultsList.innerHTML}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_limits_comparison_mode_to_three_grants():
+    script = build_frontend_harness(
+        """
+const results = [
+  { grant_id: "TOPIC-1", title: "Grant 1", status: "Open", portal_url: "https://example.com/1", fit_score: 91, why_match: "Fit 1", application_angle: "Angle 1", keywords: [], budget: "EUR 5M", deadline: "2026-08-01", days_left: 20, framework_programme: "Horizon", programme_division: "Cluster 4" },
+  { grant_id: "TOPIC-2", title: "Grant 2", status: "Open", portal_url: "https://example.com/2", fit_score: 81, why_match: "Fit 2", application_angle: "Angle 2", keywords: [], budget: "EUR 4M", deadline: "2026-08-02", days_left: 21, framework_programme: "LIFE", programme_division: "Climate" },
+  { grant_id: "TOPIC-3", title: "Grant 3", status: "Open", portal_url: "https://example.com/3", fit_score: 71, why_match: "Fit 3", application_angle: "Angle 3", keywords: [], budget: "EUR 3M", deadline: "2026-08-03", days_left: 22, framework_programme: "Digital", programme_division: "AI" },
+  { grant_id: "TOPIC-4", title: "Grant 4", status: "Open", portal_url: "https://example.com/4", fit_score: 61, why_match: "Fit 4", application_angle: "Angle 4", keywords: [], budget: "EUR 2M", deadline: "2026-08-04", days_left: 23, framework_programme: "CERV", programme_division: "Rights" },
+];
+appContext.renderResults(results, 42);
+appContext.toggleComparisonGrant("TOPIC-1");
+appContext.toggleComparisonGrant("TOPIC-2");
+appContext.toggleComparisonGrant("TOPIC-3");
+appContext.toggleComparisonGrant("TOPIC-4");
+
+if (!comparisonTable.innerHTML.includes("Grant 1") || !comparisonTable.innerHTML.includes("Grant 3")) {
+  throw new Error(`Expected first three grants in comparison: ${comparisonTable.innerHTML}`);
+}
+if (comparisonTable.innerHTML.includes("Grant 4")) {
+  throw new Error(`Expected comparison cap at three grants: ${comparisonTable.innerHTML}`);
+}
+if (comparisonEmpty.hidden !== true) {
+  throw new Error("Expected empty comparison state to be hidden");
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_validates_alert_signup_without_backend():
+    script = build_frontend_harness(
+        """
+alertEmail.value = "not-an-email";
+await alertForm.dispatch("submit");
+if (!alertStatus.textContent.includes("Enter a valid email")) {
+  throw new Error(`Expected validation error, got: ${alertStatus.textContent}`);
+}
+
+alertEmail.value = "founder@example.com";
+await alertForm.dispatch("submit");
+if (!alertStatus.textContent.includes("Alerts coming soon")) {
+  throw new Error(`Expected success message, got: ${alertStatus.textContent}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_exports_application_brief_to_print_window():
+    script = build_frontend_harness(
+        """
+appContext.renderResults([
+  {
+    grant_id: "TOPIC-1",
+    title: "AI Grant",
+    status: "Open",
+    deadline: "2026-08-01",
+    days_left: 20,
+    budget: "EUR 5M",
+    portal_url: "https://example.com/TOPIC-1",
+    fit_score: 90,
+    why_match: "Strong fit",
+    application_angle: "Lead with deployment",
+    framework_programme: "Horizon Europe",
+    programme_division: "Cluster 4",
+    keywords: ["ai"],
+  }
+], 42);
+descriptionInput.value = "We build AI tools for industrial companies.";
+appContext.grantDetailsById.set("TOPIC-1", {
+  grant_id: "TOPIC-1",
+  full_description: "Detailed description",
+  eligibility_criteria: ["EU legal entity"],
+  submission_deadlines: [{ label: "Main deadline", value: "2026-08-01" }],
+  expected_outcomes: ["Outcome A"],
+  documents: [],
+  partner_search_available: true,
+  source: "browser_topic_detail",
+  fallback_used: false,
+});
+
+await appContext.exportApplicationBrief("TOPIC-1");
+
+const briefCalls = fetchCalls.filter((call) => call.url === "/api/application-brief");
+if (briefCalls.length !== 1) {
+  throw new Error(`Expected one brief request, got ${briefCalls.length}`);
+}
+if (openedWindows.length !== 1) {
+  throw new Error(`Expected one export window, got ${openedWindows.length}`);
+}
+if (!openedWindows[0].html.includes("Brief")) {
+  throw new Error(`Expected brief HTML in export window: ${openedWindows[0].html}`);
+}
+if (!openedWindows[0].printCalled) {
+  throw new Error("Expected print() to be called for export");
 }
 """
     )
