@@ -63,13 +63,44 @@ python -m pytest tests -q
 
 ## CLI
 
-Use the CLI for non-UI agents:
+Use the CLI in machine-first mode for agents (JSON output and stable errors are default):
 
 ```bash
-python -m backend.cli match --description "We build AI safety tooling for enterprise deployment across Europe." --json
-python -m backend.cli index --json
-python -m backend.cli status --json
-python -m backend.cli profile --query "OpenAI" --json
+# Installable command (preferred for agents)
+eufundingme match --description "We build AI safety tooling for enterprise deployment across Europe."
+
+# Fallback for local/dev environments
+python -m backend.cli match --description "We build AI safety tooling for enterprise deployment across Europe."
+python -m backend.cli index
+python -m backend.cli status
+python -m backend.cli profile --query "OpenAI"
+python -m backend.cli health
+```
+
+`eufundingme match` emits:
+
+- `--wait-timeout-seconds` (default: 60) to wait for index readiness.
+- `--poll-interval-seconds` (default: 0.5) between readiness checks.
+
+Exit codes:
+
+- `0` success
+- `2` validation/readiness blocked (`INDEX_NOT_READY`)
+- `3` timeout waiting for index
+- `1` runtime failure (`INTERNAL_ERROR`)
+
+JSON envelope (error example):
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "INDEX_NOT_READY",
+    "message": "Index is not ready for matching.",
+    "status": { "...": "..." }
+  },
+  "request_id": "optional"
+}
 ```
 
 ## API

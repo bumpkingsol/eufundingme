@@ -1,4 +1,6 @@
-from backend.profile_resolver import DemoProfileResolver
+from pathlib import Path
+
+from backend.profile_resolver import DemoProfileResolver, resolve_demo_profiles_path, load_demo_profiles
 
 
 def test_demo_profile_resolver_returns_openai_profile_case_insensitive():
@@ -38,3 +40,45 @@ def test_demo_profile_resolver_returns_unresolved_without_expander():
     assert resolution.source == "unresolved"
     assert resolution.profile is None
     assert "Add one or two sentences" in resolution.message
+
+
+def test_demo_profiles_uses_explicit_path_override(monkeypatch, tmp_path):
+    override_file = tmp_path / "DEMO-PROFILES.md"
+    override_file.write_text(
+        """
+## 1. Acme Demo
+
+**Description:**
+A fictional company building practical software tooling.
+
+**Expected matches:**
+Grants for digital technology.
+"""
+    )
+
+    monkeypatch.setenv("DEMO_PROFILES_PATH", str(override_file))
+
+    profiles = load_demo_profiles(resolve_demo_profiles_path())
+
+    assert "acme demo" in profiles
+
+
+def test_resolve_demo_profiles_path_uses_fallback_when_no_candidates(monkeypatch, tmp_path):
+    monkeypatch.delenv("DEMO_PROFILES_PATH", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    # Force all candidate files to appear missing so fallback is exercised.
+    monkeypatch.setattr("pathlib.Path.exists", lambda _self: False, raising=False)
+
+    assert resolve_demo_profiles_path() == tmp_path / "DEMO-PROFILES.md"
+
+
+def test_resolved_query_message_is_stable_when_unresolved():
+    resolver = DemoProfileResolver()
+
+    resolution = resolver.resolve("Acme Robotics")
+
+    assert resolution.resolved is False
+    assert resolution.message == (
+        "Could not expand company name automatically. Add one or two sentences about what the company does."
+    )

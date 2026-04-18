@@ -17,6 +17,20 @@ from .state import AppState
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 _SENTRY_INITIALIZED = False
+MATCH_NOT_READY_ERROR_CODE = "INDEX_NOT_READY"
+
+
+def is_match_ready(status: IndexStatus) -> bool:
+    return status.phase == "ready" and status.matching_available
+
+
+def build_match_unavailable_error(status: IndexStatus) -> dict:
+    message = status.message or "Index is not ready for matching."
+    return {
+        "code": MATCH_NOT_READY_ERROR_CODE,
+        "message": message,
+        "status": status.model_dump(),
+    }
 
 
 def initialize_sentry(settings: Settings) -> None:
@@ -100,7 +114,10 @@ def create_app(
     app.state.app_state = app_state
     app.state.match_service = match_service or build_match_service(active_settings, app_state)
     app.state.profile_resolver = profile_resolver or DemoProfileResolver(
-        expander=OpenAICompanyProfileExpander(api_key=active_settings.openai_api_key)
+        expander=OpenAICompanyProfileExpander(
+            api_key=active_settings.openai_api_key,
+            model=active_settings.openai_profile_expansion_model,
+        )
         if active_settings.openai_api_key
         else None
     )
@@ -141,8 +158,8 @@ def create_app(
     def match_company(payload: MatchRequest) -> MatchResponse:
         app.state.app_state.ensure_indexing_started()
         status = app.state.app_state.get_status()
-        if status.phase != "ready":
-            raise HTTPException(status_code=503, detail={"phase": status.phase, "message": status.message})
+        if not is_match_ready(status):
+            raise HTTPException(status_code=503, detail=build_match_unavailable_error(status))
 
         grants = app.state.app_state.get_grants()
         return app.state.match_service.match(

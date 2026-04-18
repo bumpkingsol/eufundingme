@@ -70,6 +70,8 @@ def test_match_endpoint_returns_ranked_results():
                 total_prefixes=10,
                 failed_prefixes=0,
                 embeddings_ready=True,
+                matching_available=True,
+                coverage_complete=True,
             )
 
         def get_grants(self) -> list[object]:
@@ -110,6 +112,43 @@ def test_match_endpoint_returns_ranked_results():
     assert response.status_code == 200
     assert response.json()["results"][0]["grant_id"] == "TOPIC-1"
     assert response.json()["results"][0]["fit_score"] == 92
+
+
+def test_match_endpoint_blocks_when_matching_unavailable():
+    class FakeState:
+        def ensure_indexing_started(self) -> None:
+            return None
+
+        def get_status(self) -> IndexStatus:
+            return IndexStatus(
+                phase="ready",
+                message="Ready but degraded",
+                indexed_grants=32,
+                scanned_prefixes=10,
+                total_prefixes=10,
+                failed_prefixes=0,
+                embeddings_ready=True,
+                matching_available=False,
+                degraded=True,
+                coverage_complete=True,
+                degradation_reasons=["partial_coverage"],
+            )
+
+        def get_grants(self) -> list[object]:
+            return ["placeholder"]
+
+    app = create_app(app_state=FakeState(), match_service=None)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/match",
+        json={"company_description": "We build AI safety tooling across Europe."},
+    )
+
+    assert response.status_code == 503
+    payload = response.json()
+    assert payload["detail"]["code"] == "INDEX_NOT_READY"
+    assert payload["detail"]["status"]["phase"] == "ready"
 
 
 def test_sentry_debug_route_exists():

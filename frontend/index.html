@@ -38,12 +38,17 @@
           <section class="cli-callout">
             <p class="submit-hint">
               Agents and automations can use CLI mode:
-              <code>python -m backend.cli match --description "...";</code>
-              plus <code>backend.cli index</code> and <code>backend.cli status</code>.
+              <code>eufundingme match --description "...";</code>
+              with JSON output by default, plus <code>eufundingme index</code> and
+              <code>eufundingme status</code>.
             </p>
             <p class="submit-hint">
+              Install fallback: <code>python -m backend.cli ...</code>.
               Resolve names with:
-              <code>python -m backend.cli profile --query "OpenAI"</code>.
+              <code>eufundingme profile --query "OpenAI"</code>.
+            </p>
+            <p class="submit-hint">
+              Use <code>python -m backend.cli health</code> for agent preflight checks.
             </p>
           </section>
         </section>
