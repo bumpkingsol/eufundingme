@@ -429,3 +429,46 @@ def test_match_service_preserves_core_measurements_without_embedding_metric_shor
     assert ("grants_indexed", 1) in measurements
     assert any(name == "match_latency_ms" for name, _ in measurements)
     assert all(name != "embedding_cache_hit_rate" for name, _ in measurements)
+
+
+def test_match_service_filters_security_grants_for_healthcare_profiles():
+    health_grant = make_grant(
+        "TOPIC-HEALTH",
+        "Digital health data infrastructure for patients",
+        keywords=["digital health", "patients", "medical records", "telemedicine"],
+    )
+    security_grant = make_grant(
+        "TOPIC-SECURITY",
+        "Targeted innovative capabilities for the resilience of critical entities",
+        keywords=["critical infrastructure protection", "security", "first responders", "disaster resilience"],
+    )
+    scored_candidate_ids = []
+
+    def score(company_description, candidates):
+        scored_candidate_ids.append([candidate.grant.id for candidate in candidates])
+        return [
+            ParsedLLMMatch(
+                grant_id=candidate.grant.id,
+                fit_score=88,
+                why_match="Relevant sector overlap.",
+                application_angle="Lead with the strongest sector fit.",
+            )
+            for candidate in candidates
+        ]
+
+    service = MatchService(
+        shortlister=lambda company_description, grants, limit: [
+            MatchCandidate(grant=security_grant, shortlist_score=0.98),
+            MatchCandidate(grant=health_grant, shortlist_score=0.82),
+        ],
+        scorer=score,
+    )
+
+    response = service.match(
+        "Prescrivia is an EU-based digital health infrastructure company.",
+        [security_grant, health_grant],
+        now=datetime(2026, 4, 18, tzinfo=timezone.utc),
+    )
+
+    assert scored_candidate_ids == [["TOPIC-HEALTH"]]
+    assert [result.grant_id for result in response.results] == ["TOPIC-HEALTH"]

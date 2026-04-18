@@ -112,6 +112,8 @@ LOW_SIGNAL_TERMS = {
     "feedback",
     "advanced",
     "access",
+    "infrastructure",
+    "infrastructures",
 }
 
 MIN_LEXICAL_OVERLAP = 2

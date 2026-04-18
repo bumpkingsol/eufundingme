@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import sentry_sdk
 from openai import OpenAI
 
-from .embeddings import informative_terms, lexical_shortlist
+from .embeddings import informative_terms, lexical_shortlist, tokenize_terms
 from .models import (
     GrantRecord,
     MatchCandidate,
@@ -19,9 +19,105 @@ from .models import (
 )
 from .openai_client import build_reasoning
 
+HEALTHCARE_TERMS = {
+    "health",
+    "healthcare",
+    "patient",
+    "patients",
+    "medical",
+    "clinical",
+    "care",
+    "hospital",
+    "hospitals",
+    "telehealth",
+    "telemedicine",
+    "medtech",
+    "biomedical",
+    "biomarker",
+    "diagnostic",
+    "diagnostics",
+    "doctor",
+    "doctors",
+    "nurse",
+    "nurses",
+    "prescription",
+    "prescriptions",
+    "pharma",
+    "pharmaceutical",
+    "therapeutic",
+    "therapeutics",
+}
+SECURITY_TERMS = {
+    "security",
+    "cybersecurity",
+    "defence",
+    "defense",
+    "disaster",
+    "disasters",
+    "emergency",
+    "emergencies",
+    "resilience",
+    "crisis",
+    "critical",
+    "protection",
+    "protect",
+    "responders",
+    "responder",
+    "hazard",
+    "hazards",
+    "hybrid",
+    "terrorism",
+    "border",
+    "preparedness",
+    "enforcement",
+}
+
 
 def clamp_score(value: int | float) -> int:
     return max(0, min(100, int(value)))
+
+
+def domain_term_score(text: str, terms: set[str]) -> int:
+    return sum(1 for term in tokenize_terms(text) if term in terms)
+
+
+def grant_domain_text(grant: GrantRecord) -> str:
+    return " ".join(
+        part
+        for part in [
+            grant.title,
+            grant.framework_programme,
+            grant.programme_division,
+            grant.description,
+            " ".join(grant.keywords),
+        ]
+        if part
+    )
+
+
+def filter_candidates_for_company(
+    company_description: str,
+    candidates: Sequence[MatchCandidate],
+) -> list[MatchCandidate]:
+    company_health_score = domain_term_score(company_description, HEALTHCARE_TERMS)
+    company_security_score = domain_term_score(company_description, SECURITY_TERMS)
+    prefers_healthcare = company_health_score >= 1 and company_security_score == 0
+    prefers_security = company_security_score >= 1 and company_health_score == 0
+    filtered: list[MatchCandidate] = []
+
+    for candidate in candidates:
+        grant_text = grant_domain_text(candidate.grant)
+        grant_health_score = domain_term_score(grant_text, HEALTHCARE_TERMS)
+        grant_security_score = domain_term_score(grant_text, SECURITY_TERMS)
+
+        if prefers_healthcare and grant_security_score >= 2 and grant_health_score < 2:
+            continue
+        if prefers_security and grant_health_score >= 2 and grant_security_score < 2:
+            continue
+
+        filtered.append(candidate)
+
+    return filtered or list(candidates)
 
 
 class OpenAIScorer:
@@ -62,7 +158,10 @@ class OpenAIScorer:
                 "You rank EU grants for a company. Only use the provided candidates. "
                 "Return concise, concrete reasoning. Reference specific grant requirements, "
                 "programme priorities, or keywords from the candidate grant and specific company capabilities "
-                "from the input profile. Keep the guidance actionable. Scores must be 0-100."
+                "from the input profile. Keep the guidance actionable. Treat generic overlaps such as "
+                "'digital', 'infrastructure', or incidental single-word overlaps as weak evidence when the "
+                "actual sector or use case differs. Omit sector-mismatched candidates instead of forcing a fit. "
+                "Scores must be 0-100."
             ),
             input=(
                 f"Company description:\n{company_description}\n\n"
@@ -111,6 +210,7 @@ class MatchService:
         try:
             with sentry_sdk.start_span(op="ai.shortlist", name="Candidate shortlist") as span:
                 candidates = self.shortlister(company_description, grants, limit)
+                candidates = filter_candidates_for_company(company_description, candidates)
                 span.set_data("grant_count", len(grants))
                 span.set_data("candidate_count", len(candidates))
 
