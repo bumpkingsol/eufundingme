@@ -96,7 +96,9 @@
                 rows="12"
                 placeholder="We build advanced AI safety systems for enterprise deployment across Europe..."
                 required
+                aria-describedby="form-feedback submit-hint"
               ></textarea>
+              <p id="form-feedback" class="form-feedback" role="status" aria-live="polite" hidden></p>
 
               <div class="form-row">
                 <button id="match-button" type="submit">Find Grants</button>
@@ -173,11 +175,19 @@
             <p id="results-meta" class="results-meta">No search run yet.</p>
           </div>
 
-          <div id="results-empty" class="results-empty">
-            The top matches will appear here with fit scores, rationale, and the angle to take in the application.
-          </div>
+          <div
+            id="results-region"
+            class="results-region"
+            aria-live="polite"
+            aria-busy="false"
+            aria-atomic="false"
+          >
+            <div id="results-empty" class="results-empty results-empty--intro">
+              The top matches will appear here with fit scores, rationale, and the angle to take in the application.
+            </div>
 
-          <div id="results-list" class="results-list"></div>
+            <div id="results-list" class="results-list"></div>
+          </div>
         </section>
 
         <section class="results-shell comparison-shell">

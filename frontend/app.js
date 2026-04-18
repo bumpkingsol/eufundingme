@@ -13,6 +13,7 @@ const agentHandoffCopyButton = document.querySelector("#agent-handoff-copy");
 const agentHandoffStatus = document.querySelector("#agent-handoff-status");
 const agentHandoffDisclosure = document.querySelector("#agent-handoff-disclosure");
 const agentHandoffInstructions = document.querySelector("#agent-handoff-instructions");
+const formFeedback = document.querySelector("#form-feedback");
 const submitHint = document.querySelector("#submit-hint");
 const statusCopy = document.querySelector("#status-copy");
 const statusBar = document.querySelector("#status-bar");
@@ -28,6 +29,7 @@ const statusProgress = document.querySelector("#status-progress");
 const statusUpdated = document.querySelector("#status-updated");
 const statusDegraded = document.querySelector("#status-degraded");
 const resolutionBanner = document.querySelector("#resolution-banner");
+const resultsRegion = document.querySelector("#results-region");
 const resultsEmpty = document.querySelector("#results-empty");
 const resultsList = document.querySelector("#results-list");
 const resultsMeta = document.querySelector("#results-meta");
@@ -176,13 +178,95 @@ function hideResolutionBanner() {
   resolutionBanner.textContent = "";
 }
 
+function setFormFeedback(message = "", tone = "info") {
+  if (!formFeedback) {
+    return;
+  }
+  if (!message) {
+    formFeedback.hidden = true;
+    formFeedback.textContent = "";
+    formFeedback.classList.remove("is-error");
+    return;
+  }
+  formFeedback.hidden = false;
+  formFeedback.textContent = message;
+  formFeedback.classList.toggle("is-error", tone === "error");
+}
+
+function setDescriptionInvalid(isInvalid) {
+  descriptionInput.classList.toggle("is-invalid", isInvalid);
+  descriptionInput.setAttribute("aria-invalid", isInvalid ? "true" : "false");
+}
+
+function setResultsBusy(isBusy) {
+  if (resultsRegion) {
+    resultsRegion.setAttribute("aria-busy", isBusy ? "true" : "false");
+  }
+}
+
+function buildEmptyStateMarkup({ variant = "intro", title, copy, bullets = [] }) {
+  const bulletMarkup = bullets.length
+    ? `<ul class="results-empty-list">${bullets.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+    : "";
+
+  return `
+    ${title ? `<p class="results-empty-title">${escapeHtml(title)}</p>` : ""}
+    ${copy ? `<p class="results-empty-copy">${escapeHtml(copy)}</p>` : ""}
+    ${bulletMarkup}
+  `;
+}
+
+function showResultsEmptyState(config) {
+  resultsList.innerHTML = "";
+  resultsEmpty.hidden = false;
+  resultsEmpty.className = `results-empty results-empty--${config.variant || "intro"}`;
+  resultsEmpty.innerHTML = buildEmptyStateMarkup(config);
+}
+
+function showIntroResultsState(message = DEFAULT_EMPTY_STATE, meta = "No search run yet.") {
+  latestMatchMeta = null;
+  updateDocumentTitle();
+  setResultsBusy(false);
+  showResultsEmptyState({
+    variant: "intro",
+    title: "Ready to shortlist grants",
+    copy: message,
+    bullets: [
+      "Paste a company description or try the OpenAI demo profile.",
+      "Matching will rank the strongest live opportunities and suggest an application angle.",
+    ],
+  });
+  resultsMeta.textContent = meta;
+}
+
+function showLoadingResultsState() {
+  setResultsBusy(true);
+  showResultsEmptyState({
+    variant: "loading",
+    title: "Matching grants…",
+    copy: "Scoring live programmes against your company profile and preparing judge-ready rationale.",
+    bullets: [
+      "Ranking by fit score and strategic relevance.",
+      "Generating application angles for the strongest opportunities.",
+    ],
+  });
+  resultsMeta.textContent = "Searching the current grant index…";
+}
+
 function showMatchFeedback(message) {
   latestMatchMeta = null;
-  showResolutionBanner(message);
+  hideResolutionBanner();
   updateDocumentTitle();
-  resultsEmpty.hidden = false;
-  resultsEmpty.textContent = message;
-  resultsList.innerHTML = "";
+  setResultsBusy(false);
+  showResultsEmptyState({
+    variant: "error",
+    title: "Matching is temporarily unavailable",
+    copy: message,
+    bullets: [
+      "Wait for the index panel to reach ready, then retry.",
+      "If you entered only a short company name, add one or two sentences of detail.",
+    ],
+  });
   resultsMeta.textContent = "No results available.";
 }
 
@@ -446,6 +530,7 @@ function renderGrantDetail(result) {
 function renderResults(results, indexedGrants, matchMeta = latestMatchMeta) {
   latestResults = results;
   latestMatchMeta = matchMeta || null;
+  setResultsBusy(false);
   resultsById.clear();
   for (const result of results) {
     resultsById.set(result.grant_id, result);
@@ -455,14 +540,31 @@ function renderResults(results, indexedGrants, matchMeta = latestMatchMeta) {
     comparisonGrantIds.length = 0;
     renderComparisonPanel();
     updateDocumentTitle();
-    resultsList.innerHTML = "";
-    resultsEmpty.hidden = false;
+    const zeroResultsBullets = isLexicalOnlyMode(matchMeta?.degradation_reasons)
+      ? [
+          "Add sector-specific terms, target markets, and expected project outcomes.",
+          "Keyword-only fallback is active, so weaker near-matches are intentionally hidden.",
+        ]
+      : [
+          "Add your sector, growth stage or TRL, intended EU geography, and partnership needs.",
+          "Include product maturity, deployment context, and the type of project you want funded.",
+        ];
+
     if (isLexicalOnlyMode(matchMeta?.degradation_reasons)) {
-      resultsEmpty.textContent =
-        "No reliable keyword matches yet. Add more domain-specific capabilities or enable OpenAI-backed matching for higher-confidence results.";
+      showResultsEmptyState({
+        variant: "zero",
+        title: "No reliable matches yet",
+        copy: "Keyword-only fallback is active, so the matcher is suppressing weak near-matches instead of showing misleading results.",
+        bullets: zeroResultsBullets,
+      });
       resultsMeta.textContent = `Indexed ${indexedGrants} live grants. Keyword-only fallback is active, so weak near-matches are hidden.`;
     } else {
-      resultsEmpty.textContent = DEFAULT_EMPTY_STATE;
+      showResultsEmptyState({
+        variant: "zero",
+        title: "No strong matches found",
+        copy: "The current profile did not clear the relevance threshold across the live grant set.",
+        bullets: zeroResultsBullets,
+      });
       resultsMeta.textContent = `Indexed ${indexedGrants} live grants. No strong matches yet.`;
     }
     return;
@@ -475,7 +577,7 @@ function renderResults(results, indexedGrants, matchMeta = latestMatchMeta) {
     : `Showing ${results.length} best-fit results from ${indexedGrants} indexed grants.`;
 
   resultsList.innerHTML = results
-    .map((result) => {
+    .map((result, index) => {
       const keywords = (result.keywords || [])
         .map((keyword) => `<span class="keyword-pill">${escapeHtml(keyword)}</span>`)
         .join("");
@@ -490,17 +592,20 @@ function renderResults(results, indexedGrants, matchMeta = latestMatchMeta) {
         .join("");
 
       return `
-        <article class="result-card">
+        <article class="result-card" style="animation-delay: ${index * 70}ms">
           <div class="result-head">
-            <div>
+            <div class="result-head-main">
               <h3>${escapeHtml(result.title)}</h3>
               <div class="meta-row">
                 ${meta}
                 ${urgencyMarkup(result.days_left)}
               </div>
             </div>
-            <div>
-              <span class="${getScoreChipClass(result.fit_score)}">${escapeHtml(result.fit_score)} / 100</span>
+            <div class="result-head-side">
+              <div class="score-wrap">
+                <span class="score-label">Fit score</span>
+                <span class="${getScoreChipClass(result.fit_score)}">${escapeHtml(result.fit_score)} / 100</span>
+              </div>
             </div>
           </div>
 
@@ -517,12 +622,14 @@ function renderResults(results, indexedGrants, matchMeta = latestMatchMeta) {
 
           <div class="keyword-row">${keywords}</div>
 
-          <div class="meta-row result-links">
+          <div class="meta-row result-links result-actions">
             <button class="secondary-button" type="button" onclick="toggleGrantDetails('${escapeHtml(result.grant_id)}')">
               ${expandedGrantIds.has(result.grant_id) ? "Hide details" : "View details"}
             </button>
-            <button class="secondary-button" type="button" onclick="toggleComparisonGrant('${escapeHtml(result.grant_id)}')">Add to favorites</button>
-            <button class="secondary-button" type="button" onclick="exportApplicationBrief('${escapeHtml(result.grant_id)}')">Export application brief</button>
+            <button class="secondary-button" type="button" onclick="toggleComparisonGrant('${escapeHtml(result.grant_id)}')">
+              ${comparisonGrantIds.includes(result.grant_id) ? "Remove favorite" : "Add to favorites"}
+            </button>
+            <button class="export-button" type="button" onclick="exportApplicationBrief('${escapeHtml(result.grant_id)}')">Export application brief</button>
             <a href="${escapeHtml(result.portal_url)}" target="_blank" rel="noreferrer">Open EC portal</a>
           </div>
 
@@ -683,6 +790,7 @@ function updateStatus(status) {
     status.current_prefix && status.current_page ? `${status.current_prefix} p.${status.current_page}` : "—";
   statusUpdated.textContent = formatLastProgress(status.last_progress_at);
   statusBar.style.width = `${status.phase === "ready" || status.phase === "ready_degraded" ? 100 : ratio}%`;
+  statusBar.dataset.phase = status.phase || "idle";
   if (matchButton.textContent !== "Matching…") {
     matchButton.disabled = false;
   }
@@ -910,37 +1018,43 @@ async function exportApplicationBrief(grantId) {
   if (!matchResult) {
     return;
   }
-  const companyDescription = descriptionInput.value.trim();
-  const grantDetail = grantDetailsById.get(grantId) || buildFallbackGrantDetail(grantId);
-  const journeyRequestId = ensureJourneyRequestId();
-  const response = await fetch("/api/application-brief", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Request-ID": journeyRequestId,
-    },
-    body: JSON.stringify({
-      company_description: companyDescription,
-      match_result: matchResult,
-      grant_detail: grantDetail,
-    }),
-  });
-  if (!response.ok) {
-    const errorPayload = await response.json().catch((error) => {
-      console.error(error);
-      return {};
+  try {
+    const companyDescription = descriptionInput.value.trim();
+    const grantDetail = grantDetailsById.get(grantId) || buildFallbackGrantDetail(grantId);
+    const journeyRequestId = ensureJourneyRequestId();
+    const response = await fetch("/api/application-brief", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Request-ID": journeyRequestId,
+      },
+      body: JSON.stringify({
+        company_description: companyDescription,
+        match_result: matchResult,
+        grant_detail: grantDetail,
+      }),
     });
-    throw new Error(getValidationMessage(errorPayload) || "Could not export application brief.");
-  }
+    if (!response.ok) {
+      const errorPayload = await response.json().catch((error) => {
+        console.error(error);
+        return {};
+      });
+      throw new Error(getValidationMessage(errorPayload) || "Could not export application brief.");
+    }
 
-  const payload = await response.json();
-  const exportWindow = window.open("", "_blank");
-  if (!exportWindow) {
-    throw new Error("Could not open export window.");
+    const payload = await response.json();
+    const exportWindow = window.open("", "_blank");
+    if (!exportWindow) {
+      throw new Error("Could not open export window.");
+    }
+    exportWindow.document.write(payload.html);
+    exportWindow.document.close();
+    exportWindow.print();
+    setFormFeedback("Application brief prepared. Your print dialog should open in a new tab.");
+  } catch (error) {
+    console.error(error);
+    setFormFeedback(error.message || "Could not export the application brief.", "error");
   }
-  exportWindow.document.write(payload.html);
-  exportWindow.document.close();
-  exportWindow.print();
 }
 
 async function applyQuickFillDemoProfile() {
@@ -951,15 +1065,14 @@ async function applyQuickFillDemoProfile() {
       throw new Error("Could not load the OpenAI demo profile.");
     }
     latestMatchMeta = null;
-    resultsEmpty.hidden = false;
-    resultsEmpty.textContent = DEFAULT_EMPTY_STATE;
-    resultsList.innerHTML = "";
-    resultsMeta.textContent = "OpenAI demo profile loaded. Ready to match.";
-    updateDocumentTitle();
+    setDescriptionInvalid(false);
+    setFormFeedback("OpenAI demo profile loaded. Run matching to see ranked grant opportunities.");
+    showIntroResultsState(DEFAULT_EMPTY_STATE, "OpenAI demo profile loaded. Ready to match.");
     descriptionInput.focus();
   } catch (error) {
     console.error(error);
     showResolutionBanner(error.message || "Could not load the OpenAI demo profile.");
+    setFormFeedback(error.message || "Could not load the OpenAI demo profile.", "error");
   } finally {
     quickFillOpenAIButton.disabled = false;
   }
@@ -969,8 +1082,11 @@ async function submitMatch(event) {
   event.preventDefault();
 
   let companyDescription = descriptionInput.value.trim();
+  setDescriptionInvalid(false);
+  setFormFeedback("");
   if (!companyDescription) {
-    showMatchFeedback("Add a company name or a short company description before matching.");
+    setDescriptionInvalid(true);
+    setFormFeedback("Add a company name or a short company description before matching.", "error");
     descriptionInput.focus();
     return;
   }
@@ -979,6 +1095,8 @@ async function submitMatch(event) {
 
   matchButton.disabled = true;
   matchButton.textContent = "Matching…";
+  matchButton.classList.add("is-loading");
+  showLoadingResultsState();
 
   try {
     if (looksLikeCompanyNameInput(companyDescription)) {
@@ -992,6 +1110,7 @@ async function submitMatch(event) {
     } else {
       hideResolutionBanner();
       if (companyDescription.length < MIN_DESCRIPTION_LENGTH) {
+        setDescriptionInvalid(true);
         throw new Error(
           `Add at least ${MIN_DESCRIPTION_LENGTH} characters so the matcher has enough company context.`,
         );
@@ -1018,13 +1137,22 @@ async function submitMatch(event) {
     }
 
     const payload = await response.json();
+    setFormFeedback(`Match completed. Showing ${payload.results?.length || 0} shortlisted grants.`);
     renderResults(payload.results || [], payload.indexed_grants || 0, payload);
   } catch (error) {
     console.error(error);
-    showMatchFeedback(error.message || "Matching failed.");
+    const message = error.message || "Matching failed.";
+    const looksLikeInputError =
+      message.includes("Add at least") ||
+      message.includes("Could not expand company name automatically") ||
+      message.includes("Add a company name");
+    setDescriptionInvalid(looksLikeInputError);
+    setFormFeedback(message, "error");
+    showMatchFeedback(message);
   } finally {
     matchButton.textContent = "Find Grants";
     matchButton.disabled = false;
+    matchButton.classList.remove("is-loading");
   }
 }
 
@@ -1033,13 +1161,19 @@ function handleAlertSignup(event) {
   const value = alertEmail.value.trim();
   const isValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
   if (!isValid) {
+    alertEmail.classList.add("is-invalid");
     alertStatus.textContent = "Enter a valid email to preview grant alerts.";
     return;
   }
+  alertEmail.classList.remove("is-invalid");
   alertStatus.textContent = "Alerts coming soon. We’ll notify you when new grants match this profile.";
 }
 
 descriptionInput.addEventListener("input", () => {
+  setDescriptionInvalid(false);
+  if (formFeedback?.classList.contains("is-error")) {
+    setFormFeedback("");
+  }
   if (!looksLikeCompanyNameInput(descriptionInput.value)) {
     clearPendingPreResolve();
     hideResolutionBanner();
@@ -1063,6 +1197,9 @@ agentHandoffDisclosure?.addEventListener("toggle", () => {
   }
 });
 alertForm?.addEventListener("submit", handleAlertSignup);
+alertEmail?.addEventListener("input", () => {
+  alertEmail.classList.remove("is-invalid");
+});
 matchButton.disabled = false;
 submitHint.textContent = getStatusCopy(null).submitMessage;
 updateDocumentTitle();
@@ -1070,6 +1207,7 @@ hydrateAgentHandoff();
 form.addEventListener("submit", submitMatch);
 renderDashboardSummary(null);
 renderComparisonPanel();
+showIntroResultsState();
 fetchStatus();
 
 window.grantDetailsById = grantDetailsById;
