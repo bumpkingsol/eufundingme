@@ -482,7 +482,7 @@ function renderResults(results, indexedGrants) {
             <button class="secondary-button" type="button" onclick="toggleGrantDetails('${escapeHtml(result.grant_id)}')">
               ${expandedGrantIds.has(result.grant_id) ? "Hide details" : "View details"}
             </button>
-            <button class="secondary-button" type="button" onclick="toggleComparisonGrant('${escapeHtml(result.grant_id)}')">Compare</button>
+            <button class="secondary-button" type="button" onclick="toggleComparisonGrant('${escapeHtml(result.grant_id)}')">Add to favorites</button>
             <button class="secondary-button" type="button" onclick="exportApplicationBrief('${escapeHtml(result.grant_id)}')">Export application brief</button>
             <a href="${escapeHtml(result.portal_url)}" target="_blank" rel="noreferrer">Open EC portal</a>
           </div>
