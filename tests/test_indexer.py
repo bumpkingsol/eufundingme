@@ -1,5 +1,8 @@
 from datetime import datetime, timezone
 
+import requests
+
+from backend.ec_client import ECSearchClient
 from backend.indexer import build_grant_index, filter_indexable_grants
 from backend.models import GrantRecord
 
@@ -80,7 +83,7 @@ def test_build_grant_index_merges_prefix_results_and_dedupes():
 
     client = FakeClient()
 
-    grants = build_grant_index(
+    grants, build_details = build_grant_index(
         client=client,
         prefixes=["AI-2026", "BATTERY-2026"],
         now=datetime(2026, 4, 18, tzinfo=timezone.utc),
@@ -88,6 +91,7 @@ def test_build_grant_index_merges_prefix_results_and_dedupes():
 
     assert [grant.id for grant in grants] == ["TOPIC-1", "TOPIC-2"]
     assert client.calls == [("AI-2026", 1), ("BATTERY-2026", 1)]
+    assert build_details.failed_prefixes == 0
 
 
 def test_filter_indexable_grants_prefers_higher_quality_duplicate_record():
@@ -122,3 +126,144 @@ def test_filter_indexable_grants_prefers_higher_quality_duplicate_record():
     assert len(kept) == 1
     assert kept[0].framework_programme == "Horizon Europe"
     assert kept[0].keywords == ["Artificial intelligence"]
+
+
+def test_build_grant_index_crawls_multiple_pages_until_exhausted():
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int]] = []
+
+        def search(self, *, text: str, page_number: int, page_size: int) -> dict:
+            self.calls.append((text, page_number))
+            if text != "AI-2026":
+                return {"results": [], "totalResults": 0}
+            if page_number == 1:
+                return {
+                    "results": [
+                        {
+                            "metadata": {
+                                "title": ["Grant 1"],
+                                "identifier": ["TOPIC-1"],
+                                "status": ["31094501"],
+                                "deadlineDate": ["2026-08-01T17:00:00Z"],
+                            }
+                        }
+                    ],
+                    "totalResults": 2,
+                }
+            if page_number == 2:
+                return {
+                    "results": [
+                        {
+                            "metadata": {
+                                "title": ["Grant 2"],
+                                "identifier": ["TOPIC-2"],
+                                "status": ["31094501"],
+                                "deadlineDate": ["2026-08-02T17:00:00Z"],
+                            }
+                        }
+                    ],
+                    "totalResults": 2,
+                }
+            return {"results": [], "totalResults": 2}
+
+    grants, build_details = build_grant_index(
+        client=FakeClient(),
+        prefixes=["AI-2026"],
+        page_size=1,
+        max_pages_per_prefix=None,
+        now=datetime(2026, 4, 18, tzinfo=timezone.utc),
+    )
+
+    assert [grant.id for grant in grants] == ["TOPIC-1", "TOPIC-2"]
+    assert build_details.failed_prefixes == 0
+
+
+def test_build_grant_index_marks_truncated_prefixes_when_page_cap_is_hit():
+    class FakeClient:
+        def search(self, *, text: str, page_number: int, page_size: int) -> dict:
+            return {
+                "results": [
+                    {
+                        "metadata": {
+                            "title": [f"Grant {page_number}"],
+                            "identifier": [f"TOPIC-{page_number}"],
+                            "status": ["31094501"],
+                            "deadlineDate": ["2026-08-01T17:00:00Z"],
+                        }
+                    }
+                ],
+                "totalResults": 3,
+            }
+
+    grants, build_details = build_grant_index(
+        client=FakeClient(),
+        prefixes=["AI-2026"],
+        page_size=1,
+        max_pages_per_prefix=2,
+        now=datetime(2026, 4, 18, tzinfo=timezone.utc),
+    )
+
+    assert [grant.id for grant in grants] == ["TOPIC-1", "TOPIC-2"]
+    assert build_details.truncated_prefixes == 1
+    assert build_details.failed_prefixes == 0
+    assert build_details.degradation_reasons == ["crawl_truncated"]
+
+
+def test_build_grant_index_reports_failed_prefixes_without_raising():
+    class FakeClient:
+        def search(self, *, text: str, page_number: int, page_size: int) -> dict:
+            if text == "BROKEN-2026":
+                raise RuntimeError("boom")
+            return {
+                "results": [
+                    {
+                        "metadata": {
+                            "title": ["Healthy Grant"],
+                            "identifier": ["TOPIC-1"],
+                            "status": ["31094501"],
+                            "deadlineDate": ["2026-08-01T17:00:00Z"],
+                        }
+                    }
+                ],
+                "totalResults": 1,
+            }
+
+    grants, build_details = build_grant_index(
+        client=FakeClient(),
+        prefixes=["BROKEN-2026", "HEALTHY-2026"],
+        now=datetime(2026, 4, 18, tzinfo=timezone.utc),
+    )
+
+    assert [grant.id for grant in grants] == ["TOPIC-1"]
+    assert build_details.failed_prefixes == 1
+    assert build_details.degradation_reasons == ["prefix_fetch_failed"]
+
+
+def test_ec_search_client_retries_transient_request_failures():
+    class FakeSession:
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        def post(self, *args, **kwargs):
+            self.attempts += 1
+            if self.attempts < 3:
+                raise requests.Timeout("slow")
+            return FakeResponse({"results": [], "totalResults": 0})
+
+    class FakeResponse:
+        def __init__(self, payload: dict) -> None:
+            self.payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return self.payload
+
+    client = ECSearchClient(session=FakeSession(), timeout_seconds=1.0, max_retries=2, retry_backoff_seconds=0.0)
+
+    payload = client.search(text="AI-2026")
+
+    assert payload == {"results": [], "totalResults": 0}
+    assert client.session.attempts == 3

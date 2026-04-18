@@ -32,8 +32,12 @@ Optional overrides:
 export HOST=127.0.0.1
 export PORT=8000
 export EC_PAGE_SIZE=100
-export EC_MAX_PAGES_PER_PREFIX=1
+export EC_MAX_PAGES_PER_PREFIX=3
+export EC_TIMEOUT_SECONDS=30
+export EC_MAX_RETRIES=2
+export EC_RETRY_BACKOFF_SECONDS=0.5
 export SHORTLIST_LIMIT=10
+export SENTRY_TRACES_SAMPLE_RATE=0.2
 ```
 
 ## Run
@@ -75,4 +79,7 @@ curl http://127.0.0.1:8000/api/match \
 
 - The EC API ignores server-side status filters, so indexing uses call-prefix fan-out and client-side filtering.
 - The app keeps the grant index in memory for speed.
-- If embeddings or AI scoring fail, the app falls back to lexical ranking instead of returning a blank screen.
+- By default the crawler runs exhaustively across pages for each prefix. Set `EC_MAX_PAGES_PER_PREFIX` only if you want an explicit crawl cap; capped crawls are reported as degraded coverage.
+- If `OPENAI_API_KEY` is not set, the app stays available in lexical-only mode and reports degraded matching quality.
+- If embeddings or AI scoring fail at runtime, the app falls back to lexical ranking and marks the match/index state as degraded.
+- If `SENTRY_DSN` is not set, the app still runs but no Sentry monitoring is emitted.

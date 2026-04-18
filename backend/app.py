@@ -3,19 +3,21 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+import logging
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 import sentry_sdk
 
 from .config import Settings, load_settings
 from .embeddings import EmbeddingService, embedding_shortlist, lexical_shortlist
 from .matcher import MatchService, OpenAIScorer
-from .models import HealthResponse, IndexStatus, MatchRequest, MatchResponse
+from .models import HealthResponse, IndexStatus, MatchRequest, MatchResponse, ReadinessResponse
 from .state import AppState
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 _SENTRY_INITIALIZED = False
+logger = logging.getLogger(__name__)
 
 
 def initialize_sentry(settings: Settings) -> None:
@@ -57,8 +59,9 @@ def build_match_service(settings: Settings, app_state: AppState) -> MatchService
                         embedding_service=embedding_service,
                         limit=limit,
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.exception("Embedding shortlist failed")
+                    sentry_sdk.capture_exception(exc)
         return lexical_shortlist(company_description, grants, limit=limit)
 
     return MatchService(
@@ -112,7 +115,28 @@ def create_app(
 
     @app.get("/api/health", response_model=HealthResponse)
     def health() -> HealthResponse:
-        return HealthResponse(status="ok")
+        status = app.state.app_state.get_status()
+        return HealthResponse(
+            status="ok",
+            readiness_phase=status.phase,
+            matching_available=status.matching_available,
+            degraded=status.degraded,
+        )
+
+    @app.get("/api/ready", response_model=ReadinessResponse)
+    def readiness() -> ReadinessResponse | JSONResponse:
+        app.state.app_state.ensure_indexing_started()
+        status = app.state.app_state.get_status()
+        readiness = ReadinessResponse(
+            status="ready" if status.matching_available else "not_ready",
+            phase=status.phase,
+            message=status.message,
+            degraded=status.degraded,
+            degradation_reasons=status.degradation_reasons,
+        )
+        if status.matching_available:
+            return readiness
+        return JSONResponse(status_code=503, content=readiness.model_dump())
 
     @app.get("/api/index/status", response_model=IndexStatus)
     def index_status() -> IndexStatus:
@@ -123,7 +147,7 @@ def create_app(
     def match_company(payload: MatchRequest) -> MatchResponse:
         app.state.app_state.ensure_indexing_started()
         status = app.state.app_state.get_status()
-        if status.phase != "ready":
+        if status.phase not in {"ready", "ready_degraded"}:
             raise HTTPException(status_code=503, detail={"phase": status.phase, "message": status.message})
 
         grants = app.state.app_state.get_grants()
@@ -132,6 +156,7 @@ def create_app(
             grants,
             now=datetime.now(timezone.utc),
             limit=app.state.settings.shortlist_limit,
+            base_degradation_reasons=status.degradation_reasons,
         )
 
     @app.get("/sentry-debug")

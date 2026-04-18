@@ -49,6 +49,7 @@
                 id="company-description"
                 name="company-description"
                 rows="12"
+                minlength="20"
                 placeholder="We build advanced AI safety systems for enterprise deployment across Europe..."
                 required
               ></textarea>
@@ -86,10 +87,20 @@
                 <dd id="status-prefixes">0 / 0</dd>
               </div>
               <div>
+                <dt>Failures</dt>
+                <dd id="status-failures">0</dd>
+              </div>
+              <div>
+                <dt>Coverage</dt>
+                <dd id="status-coverage">building</dd>
+              </div>
+              <div>
                 <dt>Embeddings</dt>
                 <dd id="status-embeddings">warming up</dd>
               </div>
             </dl>
+
+            <p id="status-degraded" class="submit-hint" hidden></p>
           </div>
         </section>
 

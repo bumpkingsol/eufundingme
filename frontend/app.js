@@ -6,12 +6,21 @@ const statusBar = document.querySelector("#status-bar");
 const statusPhase = document.querySelector("#status-phase");
 const statusCount = document.querySelector("#status-count");
 const statusPrefixes = document.querySelector("#status-prefixes");
+const statusFailures = document.querySelector("#status-failures");
+const statusCoverage = document.querySelector("#status-coverage");
 const statusEmbeddings = document.querySelector("#status-embeddings");
+const statusDegraded = document.querySelector("#status-degraded");
 const resultsEmpty = document.querySelector("#results-empty");
 const resultsList = document.querySelector("#results-list");
 const resultsMeta = document.querySelector("#results-meta");
 
 let latestStatus = null;
+let statusPollHandle = null;
+let statusPollInFlight = false;
+let consecutiveStatusFailures = 0;
+const DEFAULT_EMPTY_STATE =
+  "The top matches will appear here with fit scores, rationale, and the angle to take in the application.";
+const MIN_DESCRIPTION_LENGTH = 20;
 
 function escapeHtml(value) {
   return String(value)
@@ -36,6 +45,7 @@ function renderResults(results, indexedGrants) {
   if (!results.length) {
     resultsList.innerHTML = "";
     resultsEmpty.hidden = false;
+    resultsEmpty.textContent = DEFAULT_EMPTY_STATE;
     resultsMeta.textContent = `Indexed ${indexedGrants} live grants. No strong matches yet.`;
     return;
   }
@@ -100,33 +110,88 @@ function updateStatus(status) {
   const totalPrefixes = status.total_prefixes || 0;
   const scannedPrefixes = status.scanned_prefixes || 0;
   const ratio = totalPrefixes ? Math.max(8, Math.round((scannedPrefixes / totalPrefixes) * 100)) : 8;
+  const failedPrefixes = status.failed_prefixes || 0;
+  const truncatedPrefixes = status.truncated_prefixes || 0;
+  const coverageLabel = status.coverage_complete
+    ? "complete"
+    : truncatedPrefixes > 0
+      ? "truncated"
+      : status.phase === "building"
+        ? "building"
+        : "partial";
 
   statusCopy.textContent = status.message;
   statusPhase.textContent = status.phase;
   statusCount.textContent = String(status.indexed_grants || 0);
   statusPrefixes.textContent = `${scannedPrefixes} / ${totalPrefixes}`;
+  statusFailures.textContent = String(failedPrefixes + truncatedPrefixes);
+  statusCoverage.textContent = coverageLabel;
   statusEmbeddings.textContent = status.embeddings_ready ? "ready" : "warming up";
   statusBar.style.width = `${status.phase === "ready" ? 100 : ratio}%`;
-  matchButton.disabled = status.phase !== "ready";
+  matchButton.disabled = !status.matching_available;
+
+  if (status.degraded && status.degradation_reasons?.length) {
+    statusDegraded.hidden = false;
+    statusDegraded.textContent = `Degraded mode: ${status.degradation_reasons.join(", ").replaceAll("_", " ")}.`;
+  } else {
+    statusDegraded.hidden = true;
+    statusDegraded.textContent = "";
+  }
+}
+
+function getValidationMessage(errorPayload) {
+  const details = errorPayload?.detail;
+  if (Array.isArray(details) && details.length) {
+    return details
+      .map((detail) => detail.msg || detail.message)
+      .filter(Boolean)
+      .join(". ");
+  }
+  return errorPayload?.detail?.message || errorPayload?.message || null;
+}
+
+function scheduleStatusPoll(delayMs) {
+  window.clearTimeout(statusPollHandle);
+  statusPollHandle = window.setTimeout(fetchStatus, delayMs);
 }
 
 async function fetchStatus() {
+  if (statusPollInFlight) {
+    return;
+  }
+
+  statusPollInFlight = true;
+  const controller = new AbortController();
+  const timeoutHandle = window.setTimeout(() => controller.abort(), 8000);
   try {
-    const response = await fetch("/api/index/status");
+    const response = await fetch("/api/index/status", { signal: controller.signal });
     if (!response.ok) {
       throw new Error("Could not read index status.");
     }
     const status = await response.json();
+    consecutiveStatusFailures = 0;
     updateStatus(status);
+    scheduleStatusPoll(status.phase === "building" ? 2500 : 5000);
   } catch (error) {
+    consecutiveStatusFailures += 1;
     updateStatus({
       phase: "error",
       message: error.message || "Could not read index status.",
       indexed_grants: 0,
       scanned_prefixes: 0,
       total_prefixes: 0,
+      failed_prefixes: 0,
+      truncated_prefixes: 0,
       embeddings_ready: false,
+      degraded: true,
+      coverage_complete: false,
+      matching_available: false,
+      degradation_reasons: ["status_poll_failed"],
     });
+    scheduleStatusPoll(Math.min(15000, 2500 * (consecutiveStatusFailures + 1)));
+  } finally {
+    window.clearTimeout(timeoutHandle);
+    statusPollInFlight = false;
   }
 }
 
@@ -135,6 +200,14 @@ async function submitMatch(event) {
 
   const companyDescription = descriptionInput.value.trim();
   if (!companyDescription) {
+    descriptionInput.focus();
+    return;
+  }
+  if (companyDescription.length < MIN_DESCRIPTION_LENGTH) {
+    resultsEmpty.hidden = false;
+    resultsEmpty.textContent = `Add at least ${MIN_DESCRIPTION_LENGTH} characters so the matcher has enough company context.`;
+    resultsList.innerHTML = "";
+    resultsMeta.textContent = "Company description too short.";
     descriptionInput.focus();
     return;
   }
@@ -153,10 +226,7 @@ async function submitMatch(event) {
 
     if (!response.ok) {
       const errorPayload = await response.json().catch(() => ({}));
-      const errorMessage =
-        errorPayload?.detail?.message ||
-        errorPayload?.message ||
-        "Matching failed. Try again after the index finishes building.";
+      const errorMessage = getValidationMessage(errorPayload) || "Matching failed. Try again after the index finishes building.";
       throw new Error(errorMessage);
     }
 
@@ -175,4 +245,3 @@ async function submitMatch(event) {
 
 form.addEventListener("submit", submitMatch);
 fetchStatus();
-window.setInterval(fetchStatus, 2500);

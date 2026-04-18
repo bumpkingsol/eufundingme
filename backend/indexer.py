@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 
+import sentry_sdk
+
 from .ec_client import ECSearchClient
-from .models import GrantRecord
+from .models import GrantRecord, IndexBuildDetails
 from .normalize import is_code_like_label, is_numericish, normalize_grant
+
+logger = logging.getLogger(__name__)
 
 CALL_PREFIXES = [
     "HORIZON-CL1-2026",
@@ -102,17 +107,32 @@ def build_grant_index(
     prefixes: Sequence[str] | None = None,
     now: datetime | None = None,
     page_size: int = 100,
-    max_pages_per_prefix: int = 1,
+    max_pages_per_prefix: int | None = None,
     progress_callback: Callable[[int, int, int, int], None] | None = None,
-) -> list[GrantRecord]:
+) -> tuple[list[GrantRecord], IndexBuildDetails]:
     active_prefixes = list(prefixes or CALL_PREFIXES)
     collected: list[GrantRecord] = []
     failed_prefixes = 0
+    truncated_prefixes = 0
     reference_time = now or datetime.now(timezone.utc)
+    degradation_reasons: list[str] = []
 
     for prefix_index, prefix in enumerate(active_prefixes, start=1):
         try:
-            for page_number in range(1, max_pages_per_prefix + 1):
+            page_number = 1
+            while True:
+                if max_pages_per_prefix is not None and page_number > max_pages_per_prefix:
+                    truncated_prefixes += 1
+                    if "crawl_truncated" not in degradation_reasons:
+                        degradation_reasons.append("crawl_truncated")
+                    logger.warning("Grant crawl truncated by configured page cap", extra={"prefix": prefix})
+                    sentry_sdk.add_breadcrumb(
+                        category="grant_index",
+                        message="Grant crawl truncated by configured page cap",
+                        level="warning",
+                        data={"prefix": prefix, "max_pages_per_prefix": max_pages_per_prefix},
+                    )
+                    break
                 payload = client.search(text=prefix, page_number=page_number, page_size=page_size)
                 raw_results = payload.get("results", [])
                 if not isinstance(raw_results, list) or not raw_results:
@@ -124,13 +144,28 @@ def build_grant_index(
                     if not isinstance(metadata, dict):
                         continue
                     collected.append(normalize_grant(metadata, result_url=item.get("url")))
+                total_results = payload.get("totalResults")
+                if isinstance(total_results, int) and total_results <= page_number * page_size:
+                    break
                 if len(raw_results) < page_size:
                     break
+                page_number += 1
         except Exception:
             failed_prefixes += 1
+            if "prefix_fetch_failed" not in degradation_reasons:
+                degradation_reasons.append("prefix_fetch_failed")
+            logger.exception("Grant prefix crawl failed", extra={"prefix": prefix})
+            sentry_sdk.capture_exception()
         finally:
             if progress_callback is not None:
                 indexed_count = len(filter_indexable_grants(collected, now=reference_time))
                 progress_callback(prefix_index, len(active_prefixes), failed_prefixes, indexed_count)
 
-    return filter_indexable_grants(collected, now=reference_time)
+    return (
+        filter_indexable_grants(collected, now=reference_time),
+        IndexBuildDetails(
+            failed_prefixes=failed_prefixes,
+            truncated_prefixes=truncated_prefixes,
+            degradation_reasons=degradation_reasons,
+        ),
+    )
