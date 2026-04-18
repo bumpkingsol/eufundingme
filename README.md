@@ -17,7 +17,7 @@ This open-source app works in three steps:
 
 ## Environment
 
-Set these before running the app:
+Set these before running the app, either in your shell or in a local `.env` / `.env.local` file in the repo root:
 
 ```bash
 export OPENAI_API_KEY=...
@@ -61,6 +61,13 @@ python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -r requirements.txt pytest
 uvicorn backend.app:app --reload
+```
+
+For local dev, `.env.local` is the simplest path:
+
+```bash
+cp .env.example .env.local
+# then fill in at least OPENAI_API_KEY and SENTRY_DSN
 ```
 
 Open [http://127.0.0.1:8000](http://127.0.0.1:8000).

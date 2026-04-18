@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from backend.config import DEFAULT_OPENAI_TEXT_MODEL, load_settings
 
 
@@ -90,3 +92,42 @@ def test_load_settings_prefers_ci_commit_sha_over_git_fallback(monkeypatch):
     settings = load_settings()
 
     assert settings.sentry_release == "feedface1234"
+
+
+def test_load_settings_reads_values_from_dotenv_files(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("SENTRY_DSN", raising=False)
+    monkeypatch.delenv("SENTRY_ENVIRONMENT", raising=False)
+    monkeypatch.delenv("OPENAI_MATCH_MODEL", raising=False)
+
+    (tmp_path / ".env").write_text(
+        "\n".join(
+            [
+                "SENTRY_DSN=https://example@sentry.invalid/1",
+                "SENTRY_ENVIRONMENT=staging",
+                "OPENAI_MATCH_MODEL=dotenv-model",
+            ]
+        )
+    )
+
+    settings = load_settings()
+
+    assert settings.sentry_dsn == "https://example@sentry.invalid/1"
+    assert settings.sentry_environment == "staging"
+    assert settings.openai_match_model == "dotenv-model"
+
+
+def test_load_settings_prefers_process_env_and_dotenv_local(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SENTRY_ENVIRONMENT", "process-env")
+    monkeypatch.delenv("SENTRY_DSN", raising=False)
+
+    (tmp_path / ".env").write_text("SENTRY_DSN=https://env@sentry.invalid/1\nSENTRY_ENVIRONMENT=dotenv-env\n")
+    (tmp_path / ".env.local").write_text(
+        "SENTRY_DSN=https://local@sentry.invalid/1\nSENTRY_ENVIRONMENT=dotenv-local\n"
+    )
+
+    settings = load_settings()
+
+    assert settings.sentry_dsn == "https://local@sentry.invalid/1"
+    assert settings.sentry_environment == "process-env"
