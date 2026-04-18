@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from backend.app import create_app
+from backend.app import build_match_service, create_app
 from backend.config import Settings
 from backend.live_grants import LiveGrantRetrievalResult
 from backend.models import (
@@ -17,6 +17,8 @@ from backend.models import (
     MatchResult,
     ProfileFromWebsiteRequest,
 )
+from backend.snapshot_store import IndexSnapshotStore
+from backend.state import AppState
 
 
 def test_health_endpoint_returns_ok():
@@ -148,6 +150,57 @@ def test_index_status_endpoint_starts_indexing_and_returns_status():
     assert response.json()["current_prefix"] == "HORIZON-CL4-2026"
     assert response.json()["summary"]["programme_count"] == 3
     assert app.state.app_state.started is True
+
+
+def test_index_status_reports_bundled_seed_embeddings_on_boot(tmp_path):
+    snapshot_path = tmp_path / "grant-index.json"
+    seed_path = tmp_path / "grant-index.seed.json"
+    settings = Settings(
+        index_snapshot_path=str(snapshot_path),
+        index_seed_snapshot_path=str(seed_path),
+        index_refresh_stall_seconds=60,
+    )
+    IndexSnapshotStore(seed_path).save(
+        grants=[
+            GrantRecord(
+                id="TOPIC-SEED",
+                title="Seed topic",
+                status="Open",
+                portal_url="https://example.com/topic",
+                deadline="2026-08-01",
+                framework_programme="Horizon Europe",
+                programme_division="Cluster 4",
+                keywords=["ai"],
+                search_text="ai topic",
+            )
+        ],
+        embeddings={"TOPIC-SEED": [0.1, 0.2]},
+        status_payload={
+            "phase": "ready",
+            "message": "Index ready",
+            "indexed_grants": 1,
+            "scanned_prefixes": 1,
+            "total_prefixes": 1,
+            "failed_prefixes": 0,
+            "truncated_prefixes": 0,
+            "embeddings_ready": True,
+            "degraded": False,
+            "coverage_complete": True,
+            "matching_available": True,
+            "degradation_reasons": [],
+        },
+    )
+    app_state = AppState(settings=settings, prefixes=["AI-2026"])
+    app_state.ensure_indexing_started = lambda: None
+
+    client = TestClient(create_app(settings=settings, app_state=app_state))
+
+    response = client.get("/api/index/status")
+
+    assert response.status_code == 200
+    assert response.json()["snapshot_loaded"] is True
+    assert response.json()["snapshot_source"] == "bundled"
+    assert response.json()["embeddings_ready"] is True
 
 
 def test_readiness_endpoint_reports_snapshot_backed_matching():
@@ -705,6 +758,48 @@ def test_match_endpoint_records_truthful_embedding_measurements(monkeypatch):
 
     assert response.status_code == 200
     assert ("grant_embeddings_available", 1.0) in measurements
+
+
+def test_build_match_service_uses_snapshot_embeddings_for_shortlist(monkeypatch):
+    class FakeState:
+        def get_grant_embeddings(self) -> dict[str, list[float]]:
+            return {"TOPIC-1": [0.1, 0.2, 0.3]}
+
+    grant = GrantRecord(
+        id="TOPIC-1",
+        title="AI topic",
+        status="Open",
+        portal_url="https://example.com/topic",
+        deadline="2026-08-01",
+        framework_programme="Horizon Europe",
+        programme_division="Cluster 4",
+        keywords=["ai"],
+        search_text="ai topic",
+    )
+    settings = Settings(openai_api_key="test-key")
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "backend.app.embedding_shortlist",
+        lambda company_description, grants, *, grant_embeddings, embedding_service, limit: (
+            calls.append("embedding"),
+            [],
+        )[1],
+    )
+    monkeypatch.setattr(
+        "backend.app.lexical_shortlist",
+        lambda company_description, grants, *, limit: (
+            calls.append("lexical"),
+            [],
+        )[1],
+    )
+
+    match_service = build_match_service(settings, FakeState())
+    shortlist = match_service.shortlister
+    result = shortlist("We build AI tools for Europe.", [grant], 10)
+
+    assert result == []
+    assert calls == ["embedding"]
 
 
 def test_sentry_debug_route_is_hidden_by_default():

@@ -117,8 +117,10 @@ def test_app_state_loads_bundled_seed_when_runtime_snapshot_missing(tmp_path):
     assert status.matching_available is True
     assert status.snapshot_loaded is True
     assert status.snapshot_source == "bundled"
+    assert status.embeddings_ready is True
     assert "bundled_seed_mode" in status.degradation_reasons
     assert state.get_grants()[0].id == "TOPIC-SEED"
+    assert state.get_grant_embeddings() == {"TOPIC-SEED": [0.1, 0.2]}
 
 
 def test_app_state_uses_bundled_seed_when_runtime_snapshot_invalid(tmp_path):
@@ -151,7 +153,9 @@ def test_app_state_uses_bundled_seed_when_runtime_snapshot_invalid(tmp_path):
 
     assert status.snapshot_loaded is True
     assert status.snapshot_source == "bundled"
+    assert status.embeddings_ready is False
     assert state.get_grants()[0].id == "TOPIC-SEED"
+    assert state.get_grant_embeddings() == {}
 
 
 def test_app_state_prefers_bundled_seed_when_it_has_more_grants_than_runtime_snapshot(tmp_path):

@@ -224,8 +224,14 @@ Successful `POST /api/match` responses include a top-level `request_id` alongsid
 
 1. Run a successful live index locally so `.cache/grant-index.json` contains a fresh runtime snapshot.
 2. Review and validate that snapshot payload.
-3. Copy it into `backend/data/grant-index.seed.json`.
-4. Commit the updated seed snapshot before the demo or release.
+3. Build the bundled seed with embeddings when you need first-boot semantic matching:
+
+```bash
+OPENAI_API_KEY=... python scripts/build_seed_snapshot.py --with-embeddings
+```
+
+4. Copy the validated runtime snapshot or generated seed into `backend/data/grant-index.seed.json`.
+5. Commit the updated seed snapshot before the demo or release.
 
 ## Agent Handoff
 
@@ -233,7 +239,7 @@ Use the status APIs and CLI JSON mode to verify whether the app is serving a run
 
 ## Copy Instructions
 
-When refreshing the bundled seed, copy the validated runtime snapshot JSON into `backend/data/grant-index.seed.json` exactly, then commit that file with the accompanying README update if workflow details changed.
+When refreshing the bundled seed, use `python scripts/build_seed_snapshot.py --with-embeddings` if the app is expected to be ready with semantic shortlist support on first boot. A bundled seed with embeddings gives immediate semantic matching; a bundled seed without embeddings starts in lexical fallback until the live refresh finishes. Runtime snapshots remain preferred when they are newer or larger than the bundled seed.
 
 ## License
 
