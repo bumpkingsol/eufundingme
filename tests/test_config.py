@@ -13,6 +13,8 @@ def test_load_settings_reads_agent_config_from_env(monkeypatch):
     monkeypatch.setenv("SENTRY_ENVIRONMENT", "staging")
     monkeypatch.setenv("SENTRY_RELEASE", "2026.04.18")
     monkeypatch.setenv("SENTRY_SEND_DEFAULT_PII", "true")
+    monkeypatch.setenv("SENTRY_ENABLE_IN_TESTS", "true")
+    monkeypatch.setenv("SENTRY_DEBUG_ENDPOINT_ENABLED", "true")
 
     settings = load_settings()
 
@@ -25,6 +27,8 @@ def test_load_settings_reads_agent_config_from_env(monkeypatch):
     assert settings.sentry_environment == "staging"
     assert settings.sentry_release == "2026.04.18"
     assert settings.sentry_send_default_pii is True
+    assert settings.sentry_enable_in_tests is True
+    assert settings.sentry_debug_endpoint_enabled is True
 
 
 def test_load_settings_uses_eui_match_timeout_alias(monkeypatch):
@@ -62,6 +66,8 @@ def test_load_settings_uses_hardened_defaults(monkeypatch):
     assert settings.sentry_environment == "development"
     assert settings.sentry_release is None
     assert settings.sentry_send_default_pii is False
+    assert settings.sentry_enable_in_tests is False
+    assert settings.sentry_debug_endpoint_enabled is False
 
 
 def test_load_settings_reads_seed_snapshot_override(monkeypatch):

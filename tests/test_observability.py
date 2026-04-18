@@ -47,6 +47,7 @@ def test_initialize_sentry_uses_explicit_integrations_and_safe_defaults(monkeypa
             sentry_environment="production",
             sentry_release="2026.04.18",
             sentry_send_default_pii=False,
+            sentry_enable_in_tests=True,
         )
     )
 
@@ -59,6 +60,47 @@ def test_initialize_sentry_uses_explicit_integrations_and_safe_defaults(monkeypa
     assert "FastApiIntegration" in integration_names
     assert "OpenAIIntegration" in integration_names
     assert callable(captured["traces_sampler"])
+
+
+def test_initialize_sentry_skips_during_pytest_by_default(monkeypatch):
+    captured = {"called": False}
+
+    def fake_init(**_kwargs):
+        captured["called"] = True
+
+    monkeypatch.setattr("backend.observability.sentry_sdk.init", fake_init)
+    monkeypatch.setattr("backend.observability._SENTRY_INITIALIZED", False)
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/test_api.py::test_example (call)")
+
+    initialize_sentry(
+        Settings(
+            sentry_dsn="https://example@sentry.invalid/1",
+            sentry_traces_sample_rate=0.2,
+        )
+    )
+
+    assert captured["called"] is False
+
+
+def test_initialize_sentry_can_be_enabled_explicitly_during_pytest(monkeypatch):
+    captured = {}
+
+    def fake_init(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("backend.observability.sentry_sdk.init", fake_init)
+    monkeypatch.setattr("backend.observability._SENTRY_INITIALIZED", False)
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/test_api.py::test_example (call)")
+
+    initialize_sentry(
+        Settings(
+            sentry_dsn="https://example@sentry.invalid/1",
+            sentry_traces_sample_rate=0.2,
+            sentry_enable_in_tests=True,
+        )
+    )
+
+    assert captured["dsn"] == "https://example@sentry.invalid/1"
 
 
 def test_bind_request_context_sets_request_tags_context_and_user(monkeypatch):

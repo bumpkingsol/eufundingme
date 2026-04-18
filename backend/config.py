@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,6 +33,8 @@ class Settings:
     sentry_environment: str = "development"
     sentry_release: str | None = None
     sentry_send_default_pii: bool = False
+    sentry_enable_in_tests: bool = False
+    sentry_debug_endpoint_enabled: bool = False
     ec_page_size: int = 100
     ec_max_pages_per_prefix: int | None = None
     shortlist_limit: int = 10
@@ -75,6 +78,10 @@ def _load_dotenv_values() -> dict[str, str]:
 
 def _env(name: str, default: str | None = None, *, dotenv_values: dict[str, str]) -> str | None:
     return os.getenv(name, dotenv_values.get(name, default))
+
+
+def _running_under_pytest() -> bool:
+    return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
 
 
 def _discover_git_commit_sha() -> str | None:
@@ -145,6 +152,19 @@ def load_settings() -> Settings:
         sentry_release=_resolve_sentry_release(dotenv_values=dotenv_values),
         sentry_send_default_pii=(
             _env("SENTRY_SEND_DEFAULT_PII", "false", dotenv_values=dotenv_values) or "false"
+        ).lower()
+        == "true",
+        sentry_enable_in_tests=(
+            _env(
+                "SENTRY_ENABLE_IN_TESTS",
+                "false" if _running_under_pytest() else "true",
+                dotenv_values=dotenv_values,
+            )
+            or "false"
+        ).lower()
+        == "true",
+        sentry_debug_endpoint_enabled=(
+            _env("SENTRY_DEBUG_ENDPOINT_ENABLED", "false", dotenv_values=dotenv_values) or "false"
         ).lower()
         == "true",
         ec_page_size=int(_env("EC_PAGE_SIZE", "100", dotenv_values=dotenv_values) or "100"),

@@ -523,9 +523,11 @@ def create_app(
                 round((time.perf_counter() - started_at) * 1000, 3),
             )
 
-    @app.get("/sentry-debug")
-    def sentry_debug() -> None:
-        _ = 1 / 0
+    if active_settings.sentry_debug_endpoint_enabled:
+
+        @app.get("/sentry-debug")
+        def sentry_debug() -> None:
+            _ = 1 / 0
 
     return app
 
