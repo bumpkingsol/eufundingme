@@ -3,6 +3,9 @@ const DEFAULT_EMPTY_STATE =
   "The top matches will appear here with fit scores, rationale, and the angle to take in the application.";
 const MIN_DESCRIPTION_LENGTH = 20;
 const PROFILE_RESOLVE_DEBOUNCE_MS = 450;
+const MAX_COMPARISON_GRANTS = 3;
+const EC_TOPIC_DETAILS_BASE_URL =
+  "https://ec.europa.eu/info/funding-tenders/opportunities/data/topicDetails";
 
 const form = document.querySelector("#match-form");
 const descriptionInput = document.querySelector("#company-description");
@@ -10,6 +13,7 @@ const matchButton = document.querySelector("#match-button");
 const quickFillOpenAIButton = document.querySelector("#quick-fill-openai");
 const agentHandoffCopyButton = document.querySelector("#agent-handoff-copy");
 const agentHandoffStatus = document.querySelector("#agent-handoff-status");
+const agentHandoffDisclosure = document.querySelector("#agent-handoff-disclosure");
 const agentHandoffInstructions = document.querySelector("#agent-handoff-instructions");
 const submitHint = document.querySelector("#submit-hint");
 const statusCopy = document.querySelector("#status-copy");
@@ -29,8 +33,19 @@ const resolutionBanner = document.querySelector("#resolution-banner");
 const resultsEmpty = document.querySelector("#results-empty");
 const resultsList = document.querySelector("#results-list");
 const resultsMeta = document.querySelector("#results-meta");
+const dashboardTotalGrants = document.querySelector("#dashboard-total-grants");
+const dashboardProgrammes = document.querySelector("#dashboard-programmes");
+const dashboardBudget = document.querySelector("#dashboard-budget");
+const dashboardDeadline = document.querySelector("#dashboard-deadline");
+const comparisonPanel = document.querySelector("#comparison-panel");
+const comparisonEmpty = document.querySelector("#comparison-empty");
+const comparisonTable = document.querySelector("#comparison-table");
+const alertForm = document.querySelector("#alert-form");
+const alertEmail = document.querySelector("#alert-email");
+const alertStatus = document.querySelector("#alert-status");
 
 let latestStatus = null;
+let latestResults = [];
 let statusPollHandle = null;
 let statusPollInFlight = false;
 let consecutiveStatusFailures = 0;
@@ -38,6 +53,11 @@ let resolveDebounceHandle = null;
 let inFlightPreResolveQuery = "";
 let lastPreResolvedQuery = "";
 let latestResolveToken = 0;
+const resultsById = new Map();
+const grantDetailsById = new Map();
+const loadingGrantIds = new Set();
+const expandedGrantIds = new Set();
+const comparisonGrantIds = [];
 
 const AGENT_HANDOFF_INSTRUCTIONS = `Act as an autonomous shell agent for this repository.
 
@@ -114,70 +134,23 @@ function updateDocumentTitle(resultCount = 0) {
   document.title = resultCount > 0 ? `${resultCount} Grants Found | ${DEFAULT_TITLE}` : DEFAULT_TITLE;
 }
 
-function renderResults(results, indexedGrants) {
-  if (!results.length) {
-    updateDocumentTitle();
-    resultsList.innerHTML = "";
-    resultsEmpty.hidden = false;
-    resultsEmpty.textContent = DEFAULT_EMPTY_STATE;
-    resultsMeta.textContent = `Indexed ${indexedGrants} live grants. No strong matches yet.`;
-    return;
+function hydrateAgentHandoff() {
+  agentHandoffInstructions.value = AGENT_HANDOFF_INSTRUCTIONS;
+}
+
+async function copyAgentHandoffInstructions() {
+  if (agentHandoffDisclosure) {
+    agentHandoffDisclosure.open = true;
   }
-
-  updateDocumentTitle(results.length);
-  resultsEmpty.hidden = true;
-  resultsMeta.textContent = `Showing ${results.length} best-fit results from ${indexedGrants} indexed grants.`;
-
-  resultsList.innerHTML = results
-    .map((result) => {
-      const keywords = (result.keywords || [])
-        .map((keyword) => `<span class="keyword-pill">${escapeHtml(keyword)}</span>`)
-        .join("");
-
-      const meta = [
-        result.framework_programme && `<span class="meta-pill">${escapeHtml(result.framework_programme)}</span>`,
-        result.programme_division && `<span class="meta-pill">${escapeHtml(result.programme_division)}</span>`,
-        result.deadline && `<span class="meta-pill">Deadline ${escapeHtml(result.deadline)}</span>`,
-        result.budget && `<span class="meta-pill">${escapeHtml(result.budget)}</span>`,
-      ]
-        .filter(Boolean)
-        .join("");
-
-      return `
-        <article class="result-card">
-          <div class="result-head">
-            <div>
-              <h3>${escapeHtml(result.title)}</h3>
-              <div class="meta-row">
-                ${meta}
-                ${urgencyMarkup(result.days_left)}
-              </div>
-            </div>
-            <div>
-              <span class="${getScoreChipClass(result.fit_score)}">${escapeHtml(result.fit_score)} / 100</span>
-            </div>
-          </div>
-
-          <div class="result-copy">
-            <div class="copy-block">
-              <strong>Why this matches</strong>
-              <span>${escapeHtml(result.why_match)}</span>
-            </div>
-            <div class="copy-block">
-              <strong>Application angle</strong>
-              <span>${escapeHtml(result.application_angle)}</span>
-            </div>
-          </div>
-
-          <div class="keyword-row">${keywords}</div>
-
-          <div class="meta-row result-links">
-            <a href="${escapeHtml(result.portal_url)}" target="_blank" rel="noreferrer">Open EC portal</a>
-          </div>
-        </article>
-      `;
-    })
-    .join("");
+  try {
+    await navigator.clipboard.writeText(agentHandoffInstructions.value);
+    agentHandoffStatus.textContent = "Instructions copied. Paste them into your agent chat.";
+  } catch (_error) {
+    agentHandoffStatus.textContent =
+      "Copy failed. Select the instructions manually and paste them into your agent chat.";
+    agentHandoffInstructions.focus();
+    agentHandoffInstructions.select();
+  }
 }
 
 function showResolutionBanner(text) {
@@ -241,19 +214,6 @@ function formatLastProgress(timestamp) {
   return `${formatDuration(diffSeconds)} ago`;
 }
 
-function hydrateAgentHandoff() {
-  agentHandoffInstructions.value = AGENT_HANDOFF_INSTRUCTIONS;
-}
-
-async function copyAgentHandoffInstructions() {
-  try {
-    await navigator.clipboard.writeText(agentHandoffInstructions.value);
-    agentHandoffStatus.textContent = "Instructions copied. Paste them into your agent chat.";
-  } catch (_error) {
-    agentHandoffStatus.textContent = "Copy failed. Select the instructions manually and paste them into your agent chat.";
-  }
-}
-
 function humanizeReasons(reasons) {
   return (reasons || []).map((reason) => reason.replaceAll("_", " "));
 }
@@ -269,7 +229,8 @@ function getStatusCopy(status) {
   if (status.snapshot_source === "bundled" && status.refresh_in_progress) {
     return {
       statusMessage: "Bundled seed snapshot is live while the background refresh catches up.",
-      submitMessage: "Matching is live from the bundled seed snapshot while the exhaustive live refresh continues.",
+      submitMessage:
+        "Matching is live from the bundled seed snapshot while the exhaustive live refresh continues.",
     };
   }
 
@@ -305,6 +266,203 @@ function getStatusCopy(status) {
     statusMessage: "Starting live EU grant index...",
     submitMessage: "Live indexing starts on page load. Watch the status panel while matching unlocks.",
   };
+}
+
+function renderDashboardSummary(summary) {
+  if (!dashboardTotalGrants) {
+    return;
+  }
+  dashboardTotalGrants.textContent = summary?.total_grants ? `${summary.total_grants} grants indexed` : "0 grants indexed";
+  dashboardProgrammes.textContent = summary?.programme_count ? `${summary.programme_count} programmes` : "0 programmes";
+  dashboardBudget.textContent = summary?.total_budget_display
+    ? `${summary.total_budget_display} total available`
+    : "Budget pending";
+  dashboardDeadline.textContent =
+    summary?.closest_deadline_days !== null && summary?.closest_deadline_days !== undefined
+      ? `Closest deadline: ${summary.closest_deadline_days} days`
+      : "Closest deadline: —";
+}
+
+function renderComparisonPanel() {
+  if (!comparisonTable || !comparisonEmpty) {
+    return;
+  }
+  const grants = comparisonGrantIds.map((grantId) => resultsById.get(grantId)).filter(Boolean);
+  if (!grants.length) {
+    comparisonEmpty.hidden = false;
+    comparisonTable.innerHTML = "";
+    return;
+  }
+
+  comparisonEmpty.hidden = true;
+  const columns = grants
+    .map((grant) => {
+      const detail = grantDetailsById.get(grant.grant_id);
+      const outcomes = detail?.expected_outcomes?.join(", ") || "—";
+      const eligibility = detail?.eligibility_criteria?.join(", ") || grant.why_match;
+      return `
+        <div class="comparison-card">
+          <h3>${escapeHtml(grant.title)}</h3>
+          <p><strong>Budget</strong> ${escapeHtml(grant.budget || "—")}</p>
+          <p><strong>Deadline</strong> ${escapeHtml(grant.deadline || "—")}</p>
+          <p><strong>Fit</strong> ${escapeHtml(grant.fit_score)} / 100</p>
+          <p><strong>Programme</strong> ${escapeHtml(grant.framework_programme || "—")}</p>
+          <p><strong>Outcomes</strong> ${escapeHtml(outcomes)}</p>
+          <p><strong>Requirements</strong> ${escapeHtml(eligibility)}</p>
+        </div>
+      `;
+    })
+    .join("");
+  comparisonTable.innerHTML = columns;
+}
+
+function renderGrantDetail(result) {
+  if (!expandedGrantIds.has(result.grant_id)) {
+    return "";
+  }
+  if (loadingGrantIds.has(result.grant_id)) {
+    return `<div class="grant-detail"><p class="submit-hint">Loading grant details…</p></div>`;
+  }
+  const detail = grantDetailsById.get(result.grant_id);
+  if (!detail) {
+    return `<div class="grant-detail"><p class="submit-hint">Grant detail unavailable.</p></div>`;
+  }
+  const deadlines = (detail.submission_deadlines || [])
+    .map((entry) => `<li>${escapeHtml(entry.label)}: ${escapeHtml(entry.value)}</li>`)
+    .join("");
+  const outcomes = (detail.expected_outcomes || [])
+    .map((entry) => `<li>${escapeHtml(entry)}</li>`)
+    .join("");
+  const eligibility = (detail.eligibility_criteria || [])
+    .map((entry) => `<li>${escapeHtml(entry)}</li>`)
+    .join("");
+  const documents = (detail.documents || [])
+    .map(
+      (entry) =>
+        `<li><a href="${escapeHtml(entry.url)}" target="_blank" rel="noreferrer">${escapeHtml(entry.title)}</a></li>`,
+    )
+    .join("");
+
+  return `
+    <div class="grant-detail">
+      <div class="copy-block">
+        <strong>Full description</strong>
+        <span>${escapeHtml(detail.full_description || "No expanded description available yet.")}</span>
+      </div>
+      <div class="detail-grid">
+        <div>
+          <strong>Eligibility criteria</strong>
+          <ul>${eligibility || "<li>Not available</li>"}</ul>
+        </div>
+        <div>
+          <strong>Submission deadlines</strong>
+          <ul>${deadlines || "<li>Not available</li>"}</ul>
+        </div>
+        <div>
+          <strong>Expected outcomes</strong>
+          <ul>${outcomes || "<li>Not available</li>"}</ul>
+        </div>
+        <div>
+          <strong>Documents</strong>
+          <ul>${documents || "<li>Not available</li>"}</ul>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderResults(results, indexedGrants) {
+  latestResults = results;
+  resultsById.clear();
+  for (const result of results) {
+    resultsById.set(result.grant_id, result);
+  }
+
+  if (!results.length) {
+    comparisonGrantIds.length = 0;
+    renderComparisonPanel();
+    updateDocumentTitle();
+    resultsList.innerHTML = "";
+    resultsEmpty.hidden = false;
+    resultsEmpty.textContent = DEFAULT_EMPTY_STATE;
+    resultsMeta.textContent = `Indexed ${indexedGrants} live grants. No strong matches yet.`;
+    return;
+  }
+
+  updateDocumentTitle(results.length);
+  resultsEmpty.hidden = true;
+  resultsMeta.textContent = `Showing ${results.length} best-fit results from ${indexedGrants} indexed grants.`;
+
+  resultsList.innerHTML = results
+    .map((result) => {
+      const keywords = (result.keywords || [])
+        .map((keyword) => `<span class="keyword-pill">${escapeHtml(keyword)}</span>`)
+        .join("");
+
+      const meta = [
+        result.framework_programme && `<span class="meta-pill">${escapeHtml(result.framework_programme)}</span>`,
+        result.programme_division && `<span class="meta-pill">${escapeHtml(result.programme_division)}</span>`,
+        result.deadline && `<span class="meta-pill">Deadline ${escapeHtml(result.deadline)}</span>`,
+        result.budget && `<span class="meta-pill">${escapeHtml(result.budget)}</span>`,
+      ]
+        .filter(Boolean)
+        .join("");
+
+      return `
+        <article class="result-card">
+          <div class="result-head">
+            <div>
+              <h3>${escapeHtml(result.title)}</h3>
+              <div class="meta-row">
+                ${meta}
+                ${urgencyMarkup(result.days_left)}
+              </div>
+            </div>
+            <div>
+              <span class="${getScoreChipClass(result.fit_score)}">${escapeHtml(result.fit_score)} / 100</span>
+            </div>
+          </div>
+
+          <div class="result-copy">
+            <div class="copy-block">
+              <strong>Why this matches</strong>
+              <span>${escapeHtml(result.why_match)}</span>
+            </div>
+            <div class="copy-block">
+              <strong>Application angle</strong>
+              <span>${escapeHtml(result.application_angle)}</span>
+            </div>
+          </div>
+
+          <div class="keyword-row">${keywords}</div>
+
+          <div class="meta-row result-links">
+            <button class="secondary-button" type="button" onclick="toggleGrantDetails('${escapeHtml(result.grant_id)}')">
+              ${expandedGrantIds.has(result.grant_id) ? "Hide details" : "View details"}
+            </button>
+            <button class="secondary-button" type="button" onclick="toggleComparisonGrant('${escapeHtml(result.grant_id)}')">Compare</button>
+            <button class="secondary-button" type="button" onclick="exportApplicationBrief('${escapeHtml(result.grant_id)}')">Export application brief</button>
+            <a href="${escapeHtml(result.portal_url)}" target="_blank" rel="noreferrer">Open EC portal</a>
+          </div>
+
+          ${renderGrantDetail(result)}
+        </article>
+      `;
+    })
+    .join("");
+
+  renderComparisonPanel();
+}
+
+function getValidationMessage(errorPayload) {
+  const details = errorPayload?.detail;
+  if (Array.isArray(details) && details.length) {
+    return details
+      .map((detail) => detail.msg || detail.message)
+      .filter(Boolean)
+      .join(". ");
+  }
+  return errorPayload?.detail?.message || errorPayload?.detail || errorPayload?.message || null;
 }
 
 function clearPendingPreResolve() {
@@ -370,7 +528,9 @@ async function maybeResolveCompanyProfile(value, { source = "typing", force = fa
     return resolution.profile;
   } catch (_error) {
     if (source === "submit") {
-      throw new Error("Could not expand company name automatically. Add one or two sentences about what the company does.");
+      throw new Error(
+        "Could not expand company name automatically. Add one or two sentences about what the company does.",
+      );
     }
     return null;
   } finally {
@@ -408,7 +568,6 @@ function updateStatus(status) {
         ? "building"
         : "partial";
   const statusCopyText = getStatusCopy(status);
-  const matchingAvailable = isMatchingAvailable(status);
   const snapshotAge = formatDuration(status.snapshot_age_seconds);
 
   statusCopy.textContent = statusCopyText.statusMessage;
@@ -429,15 +588,14 @@ function updateStatus(status) {
       : "building live index"
     : "idle";
   statusProgress.textContent =
-    status.current_prefix && status.current_page
-      ? `${status.current_prefix} p.${status.current_page}`
-      : "—";
+    status.current_prefix && status.current_page ? `${status.current_prefix} p.${status.current_page}` : "—";
   statusUpdated.textContent = formatLastProgress(status.last_progress_at);
   statusBar.style.width = `${status.phase === "ready" || status.phase === "ready_degraded" ? 100 : ratio}%`;
   if (matchButton.textContent !== "Matching…") {
     matchButton.disabled = false;
   }
   submitHint.textContent = statusCopyText.submitMessage;
+  renderDashboardSummary(status.summary);
 
   if (status.degraded && status.degradation_reasons?.length) {
     statusDegraded.hidden = false;
@@ -446,17 +604,6 @@ function updateStatus(status) {
     statusDegraded.hidden = true;
     statusDegraded.textContent = "";
   }
-}
-
-function getValidationMessage(errorPayload) {
-  const details = errorPayload?.detail;
-  if (Array.isArray(details) && details.length) {
-    return details
-      .map((detail) => detail.msg || detail.message)
-      .filter(Boolean)
-      .join(". ");
-  }
-  return errorPayload?.detail?.message || errorPayload?.message || null;
 }
 
 function scheduleStatusPoll(delayMs) {
@@ -502,12 +649,188 @@ async function fetchStatus() {
       current_page: null,
       last_progress_at: null,
       snapshot_age_seconds: null,
+      summary: null,
     });
     scheduleStatusPoll(Math.min(15000, 2500 * (consecutiveStatusFailures + 1)));
   } finally {
     window.clearTimeout(timeoutHandle);
     statusPollInFlight = false;
   }
+}
+
+function normalizeTopicDetailPayload(payload, topicId) {
+  const topicDetails = payload?.topicDetails || {};
+  const summary = typeof topicDetails.summary === "object" && topicDetails.summary ? topicDetails.summary : {};
+  const sections = typeof topicDetails.sections === "object" && topicDetails.sections ? topicDetails.sections : {};
+
+  return {
+    grant_id: summary.identifier || topicId,
+    full_description: stripHtmlToText(sections.objective || sections.description || ""),
+    eligibility_criteria: normalizeTextList(sections.eligibilityConditions),
+    submission_deadlines: normalizeDeadlines(sections.submissionConditions, summary),
+    expected_outcomes: normalizeTextList(sections.expectedOutcomes),
+    documents: normalizeDocuments(sections.documents),
+    partner_search_available: normalizeBool(sections.partnerSearch),
+    source: "browser_topic_detail",
+    fallback_used: false,
+  };
+}
+
+function stripHtmlToText(value) {
+  return String(value || "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeTextList(value) {
+  const values = Array.isArray(value) ? value : value ? [value] : [];
+  const items = [];
+  for (const entry of values) {
+    const stringValue = String(entry || "");
+    const matches = [...stringValue.matchAll(/<li[^>]*>(.*?)<\/li>/gi)];
+    if (matches.length) {
+      for (const match of matches) {
+        const cleaned = stripHtmlToText(match[1]);
+        if (cleaned) {
+          items.push(cleaned);
+        }
+      }
+      continue;
+    }
+    const cleaned = stripHtmlToText(stringValue);
+    if (cleaned) {
+      items.push(cleaned);
+    }
+  }
+  return [...new Set(items)];
+}
+
+function normalizeDeadlines(submissionConditions, summary) {
+  const deadlines = [];
+  const detailDeadline = submissionConditions?.deadlineDate?.slice?.(0, 10);
+  if (detailDeadline) {
+    deadlines.push({ label: "Main deadline", value: detailDeadline });
+  }
+  const summaryDeadline = summary?.deadlineDate?.slice?.(0, 10);
+  if (summaryDeadline && !deadlines.some((entry) => entry.value === summaryDeadline)) {
+    deadlines.push({ label: "Main deadline", value: summaryDeadline });
+  }
+  return deadlines;
+}
+
+function normalizeDocuments(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter((entry) => entry && typeof entry.title === "string" && typeof entry.url === "string")
+    .map((entry) => ({ title: entry.title, url: entry.url }));
+}
+
+function normalizeBool(value) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    return ["true", "1", "yes"].includes(value.toLowerCase());
+  }
+  return null;
+}
+
+async function toggleGrantDetails(grantId) {
+  if (expandedGrantIds.has(grantId)) {
+    expandedGrantIds.delete(grantId);
+    renderResults(latestResults, latestStatus?.indexed_grants || latestResults.length);
+    return;
+  }
+
+  expandedGrantIds.add(grantId);
+  if (grantDetailsById.has(grantId)) {
+    renderResults(latestResults, latestStatus?.indexed_grants || latestResults.length);
+    return;
+  }
+
+  loadingGrantIds.add(grantId);
+  renderResults(latestResults, latestStatus?.indexed_grants || latestResults.length);
+
+  try {
+    const response = await fetch(`${EC_TOPIC_DETAILS_BASE_URL}/${grantId}.json`);
+    if (!response.ok) {
+      throw new Error("Could not load topic detail.");
+    }
+    const payload = await response.json();
+    grantDetailsById.set(grantId, normalizeTopicDetailPayload(payload, grantId));
+  } catch (_error) {
+    grantDetailsById.set(grantId, buildFallbackGrantDetail(grantId));
+  } finally {
+    loadingGrantIds.delete(grantId);
+    renderResults(latestResults, latestStatus?.indexed_grants || latestResults.length);
+  }
+}
+
+function buildFallbackGrantDetail(grantId) {
+  const result = resultsById.get(grantId);
+  return {
+    grant_id: grantId,
+    full_description: "",
+    eligibility_criteria: [],
+    submission_deadlines:
+      result?.deadline ? [{ label: "Main deadline", value: result.deadline }] : [],
+    expected_outcomes: [],
+    documents: [],
+    partner_search_available: null,
+    source: "match_result_fallback",
+    fallback_used: true,
+  };
+}
+
+function toggleComparisonGrant(grantId) {
+  const existingIndex = comparisonGrantIds.indexOf(grantId);
+  if (existingIndex >= 0) {
+    comparisonGrantIds.splice(existingIndex, 1);
+    renderComparisonPanel();
+    return;
+  }
+  if (comparisonGrantIds.length >= MAX_COMPARISON_GRANTS) {
+    renderComparisonPanel();
+    return;
+  }
+  comparisonGrantIds.push(grantId);
+  renderComparisonPanel();
+}
+
+async function exportApplicationBrief(grantId) {
+  const matchResult = resultsById.get(grantId);
+  if (!matchResult) {
+    return;
+  }
+  const companyDescription = descriptionInput.value.trim();
+  const grantDetail = grantDetailsById.get(grantId) || buildFallbackGrantDetail(grantId);
+  const response = await fetch("/api/application-brief", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      company_description: companyDescription,
+      match_result: matchResult,
+      grant_detail: grantDetail,
+    }),
+  });
+  if (!response.ok) {
+    const errorPayload = await response.json().catch(() => ({}));
+    throw new Error(getValidationMessage(errorPayload) || "Could not export application brief.");
+  }
+
+  const payload = await response.json();
+  const exportWindow = window.open("", "_blank");
+  if (!exportWindow) {
+    throw new Error("Could not open export window.");
+  }
+  exportWindow.document.write(payload.html);
+  exportWindow.document.close();
+  exportWindow.print();
 }
 
 async function applyQuickFillDemoProfile() {
@@ -546,13 +869,17 @@ async function submitMatch(event) {
     if (looksLikeCompanyNameInput(companyDescription)) {
       const resolvedProfile = await maybeResolveCompanyProfile(companyDescription, { source: "submit", force: true });
       if (!resolvedProfile) {
-        throw new Error("Could not expand company name automatically. Add one or two sentences about what the company does.");
+        throw new Error(
+          "Could not expand company name automatically. Add one or two sentences about what the company does.",
+        );
       }
       companyDescription = resolvedProfile;
     } else {
       hideResolutionBanner();
       if (companyDescription.length < MIN_DESCRIPTION_LENGTH) {
-        throw new Error(`Add at least ${MIN_DESCRIPTION_LENGTH} characters so the matcher has enough company context.`);
+        throw new Error(
+          `Add at least ${MIN_DESCRIPTION_LENGTH} characters so the matcher has enough company context.`,
+        );
       }
     }
 
@@ -566,7 +893,8 @@ async function submitMatch(event) {
 
     if (!response.ok) {
       const errorPayload = await response.json().catch(() => ({}));
-      const errorMessage = getValidationMessage(errorPayload) || "Matching failed. Try again after the index finishes building.";
+      const errorMessage =
+        getValidationMessage(errorPayload) || "Matching failed. Try again after the index finishes building.";
       throw new Error(errorMessage);
     }
 
@@ -582,6 +910,17 @@ async function submitMatch(event) {
     matchButton.textContent = "Find Grants";
     matchButton.disabled = false;
   }
+}
+
+function handleAlertSignup(event) {
+  event.preventDefault();
+  const value = alertEmail.value.trim();
+  const isValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+  if (!isValid) {
+    alertStatus.textContent = "Enter a valid email to preview grant alerts.";
+    return;
+  }
+  alertStatus.textContent = "Alerts coming soon. We’ll notify you when new grants match this profile.";
 }
 
 descriptionInput.addEventListener("input", () => {
@@ -600,9 +939,27 @@ descriptionInput.addEventListener("blur", () => {
 
 quickFillOpenAIButton.addEventListener("click", applyQuickFillDemoProfile);
 agentHandoffCopyButton.addEventListener("click", copyAgentHandoffInstructions);
+agentHandoffDisclosure?.addEventListener("toggle", () => {
+  if (agentHandoffDisclosure.open) {
+    agentHandoffStatus.textContent = "Copy and paste this block into your agent chat.";
+  } else {
+    agentHandoffStatus.textContent = "Expand this block to copy and paste it into your agent chat.";
+  }
+});
+alertForm?.addEventListener("submit", handleAlertSignup);
 matchButton.disabled = false;
 submitHint.textContent = getStatusCopy(null).submitMessage;
 updateDocumentTitle();
 hydrateAgentHandoff();
 form.addEventListener("submit", submitMatch);
+renderDashboardSummary(null);
+renderComparisonPanel();
 fetchStatus();
+
+window.grantDetailsById = grantDetailsById;
+window.renderResults = renderResults;
+window.updateStatus = updateStatus;
+window.toggleGrantDetails = toggleGrantDetails;
+window.toggleComparisonGrant = toggleComparisonGrant;
+window.exportApplicationBrief = exportApplicationBrief;
+globalThis.grantDetailsById = grantDetailsById;

@@ -41,6 +41,13 @@
             <span>Application angle included</span>
           </div>
 
+          <section class="hero-stats" aria-label="Index summary">
+            <span id="dashboard-total-grants">0 grants indexed</span>
+            <span id="dashboard-programmes">0 programmes</span>
+            <span id="dashboard-budget">Budget pending</span>
+            <span id="dashboard-deadline">Closest deadline: —</span>
+          </section>
+
           <section class="cli-callout">
             <p class="submit-hint">
               Agents and automations can use CLI mode:
@@ -72,13 +79,18 @@
                 The copied brief tells the agent to use <code>eufundingme</code>, preserve <code>request_id</code>, and surface
                 <code>INDEX_NOT_READY</code>, <code>MATCH_TIMEOUT</code>, or <code>INTERNAL_ERROR</code> verbatim.
               </p>
-              <textarea
-                id="agent-handoff-instructions"
-                class="agent-handoff-text"
-                readonly
-                aria-label="Agent handoff instructions"
-              ></textarea>
-              <p id="agent-handoff-status" class="submit-hint">Copy this block and paste it into your agent chat.</p>
+              <details id="agent-handoff-disclosure" class="agent-handoff-disclosure">
+                <summary>Show instructions</summary>
+                <div class="agent-handoff-body">
+                  <textarea
+                    id="agent-handoff-instructions"
+                    class="agent-handoff-text"
+                    readonly
+                    aria-label="Agent handoff instructions"
+                  ></textarea>
+                  <p id="agent-handoff-status" class="submit-hint">Expand this block to copy and paste it into your agent chat.</p>
+                </div>
+              </details>
             </section>
           </section>
         </section>
@@ -187,6 +199,35 @@
           </div>
 
           <div id="results-list" class="results-list"></div>
+        </section>
+
+        <section class="results-shell comparison-shell">
+          <div class="results-head">
+            <div>
+              <p class="eyebrow">Comparison Mode</p>
+              <h2>Compare 2-3 grants side by side</h2>
+            </div>
+          </div>
+          <div id="comparison-empty" class="results-empty">
+            Select up to three grants from the results to compare budget, deadline, fit, and requirements.
+          </div>
+          <div id="comparison-panel" class="comparison-panel">
+            <div id="comparison-table" class="comparison-table"></div>
+          </div>
+        </section>
+
+        <section class="results-shell alert-shell">
+          <div class="results-head">
+            <div>
+              <p class="eyebrow">Grant Alerts</p>
+              <h2>Notify me when new grants match my profile</h2>
+            </div>
+          </div>
+          <form id="alert-form" class="alert-form" novalidate>
+            <input id="alert-email" type="email" placeholder="founder@company.com" />
+            <button type="submit" class="secondary-button">Notify Me</button>
+          </form>
+          <p id="alert-status" class="submit-hint">Frontend-only preview for now. No emails are sent yet.</p>
         </section>
       </main>
 

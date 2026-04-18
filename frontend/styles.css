@@ -116,6 +116,13 @@ body {
   margin-top: 1.4rem;
 }
 
+.hero-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
 .cli-callout {
   margin-top: 1.3rem;
   max-width: 52rem;
@@ -148,10 +155,47 @@ body {
   margin-bottom: 0;
 }
 
+.agent-handoff-disclosure {
+  margin-top: 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: rgba(255, 252, 247, 0.54);
+  overflow: hidden;
+}
+
+.agent-handoff-disclosure summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 0.9rem 1rem;
+  font: 600 0.95rem/1.3 "IBM Plex Sans", sans-serif;
+  color: var(--ink);
+}
+
+.agent-handoff-disclosure summary::-webkit-details-marker {
+  display: none;
+}
+
+.agent-handoff-disclosure summary::after {
+  content: "+";
+  float: right;
+  font-size: 1.1rem;
+}
+
+.agent-handoff-disclosure[open] summary {
+  border-bottom: 1px solid var(--line);
+}
+
+.agent-handoff-disclosure[open] summary::after {
+  content: "−";
+}
+
+.agent-handoff-body {
+  padding: 0.9rem 1rem 1rem;
+}
+
 .agent-handoff-text {
   width: 100%;
   min-height: 17rem;
-  margin-top: 0.75rem;
   resize: vertical;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
@@ -163,6 +207,7 @@ body {
 }
 
 .hero-points span,
+.hero-stats span,
 .urgency {
   border-radius: 999px;
   padding: 0.55rem 0.85rem;
@@ -401,6 +446,53 @@ button:disabled {
   border-radius: var(--radius-lg);
   padding: 1.2rem;
   animation: rise-in 320ms ease-out;
+}
+
+.grant-detail {
+  display: grid;
+  gap: 1rem;
+  padding: 1rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.detail-grid,
+.comparison-table {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.detail-grid {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.comparison-table {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.comparison-card {
+  padding: 1rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.alert-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.alert-form input {
+  flex: 1 1 18rem;
+  min-height: 2.8rem;
+  padding: 0.8rem 0.95rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.68);
+  font: inherit;
 }
 
 .result-head {
