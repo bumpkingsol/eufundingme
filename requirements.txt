@@ -2,5 +2,5 @@ fastapi>=0.115,<1
 openai>=1.75,<2
 pydantic>=2.10,<3
 requests>=2.32,<3
-sentry-sdk[fastapi]>=2.27,<3
+sentry-sdk[fastapi,openai]>=2.27,<3
 uvicorn>=0.34,<1

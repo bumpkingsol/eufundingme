@@ -1,9 +1,14 @@
+const DEFAULT_TITLE = "EU Grant Matcher";
+const DEFAULT_EMPTY_STATE =
+  "The top matches will appear here with fit scores, rationale, and the angle to take in the application.";
+const MIN_DESCRIPTION_LENGTH = 20;
+const PROFILE_RESOLVE_DEBOUNCE_MS = 450;
+
 const form = document.querySelector("#match-form");
 const descriptionInput = document.querySelector("#company-description");
 const matchButton = document.querySelector("#match-button");
+const quickFillOpenAIButton = document.querySelector("#quick-fill-openai");
 const submitHint = document.querySelector("#submit-hint");
-const demoPresets = document.querySelector("#demo-presets");
-const presetButtons = document.querySelector("#preset-buttons");
 const statusCopy = document.querySelector("#status-copy");
 const statusBar = document.querySelector("#status-bar");
 const statusPhase = document.querySelector("#status-phase");
@@ -21,18 +26,15 @@ const resolutionBanner = document.querySelector("#resolution-banner");
 const resultsEmpty = document.querySelector("#results-empty");
 const resultsList = document.querySelector("#results-list");
 const resultsMeta = document.querySelector("#results-meta");
-const demoPresetProfiles = Array.isArray(window.__DEMO_PRESETS__) ? window.__DEMO_PRESETS__ : [];
 
 let latestStatus = null;
 let statusPollHandle = null;
 let statusPollInFlight = false;
 let consecutiveStatusFailures = 0;
-let activePresetName = null;
-const DEFAULT_EMPTY_STATE =
-  "The top matches will appear here with fit scores, rationale, and the angle to take in the application.";
-const MIN_DESCRIPTION_LENGTH = 20;
-const DEFAULT_SUBMIT_HINT =
-  "The first run builds a live grant index, then matching becomes instant.";
+let resolveDebounceHandle = null;
+let inFlightPreResolveQuery = "";
+let lastPreResolvedQuery = "";
+let latestResolveToken = 0;
 
 function escapeHtml(value) {
   return String(value)
@@ -53,8 +55,23 @@ function urgencyMarkup(daysLeft) {
   return `<span class="urgency">${daysLeft} days left</span>`;
 }
 
+function getScoreChipClass(fitScore) {
+  if (fitScore >= 70) {
+    return "score-chip score-chip--high";
+  }
+  if (fitScore >= 40) {
+    return "score-chip score-chip--medium";
+  }
+  return "score-chip score-chip--low";
+}
+
+function updateDocumentTitle(resultCount = 0) {
+  document.title = resultCount > 0 ? `${resultCount} Grants Found | ${DEFAULT_TITLE}` : DEFAULT_TITLE;
+}
+
 function renderResults(results, indexedGrants) {
   if (!results.length) {
+    updateDocumentTitle();
     resultsList.innerHTML = "";
     resultsEmpty.hidden = false;
     resultsEmpty.textContent = DEFAULT_EMPTY_STATE;
@@ -62,6 +79,7 @@ function renderResults(results, indexedGrants) {
     return;
   }
 
+  updateDocumentTitle(results.length);
   resultsEmpty.hidden = true;
   resultsMeta.textContent = `Showing ${results.length} best-fit results from ${indexedGrants} indexed grants.`;
 
@@ -91,7 +109,7 @@ function renderResults(results, indexedGrants) {
               </div>
             </div>
             <div>
-              <span class="score-chip">${escapeHtml(result.fit_score)} / 100</span>
+              <span class="${getScoreChipClass(result.fit_score)}">${escapeHtml(result.fit_score)} / 100</span>
             </div>
           </div>
 
@@ -127,6 +145,10 @@ function hideResolutionBanner() {
   resolutionBanner.textContent = "";
 }
 
+function normalizeCompanyNameInput(value) {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
 function looksLikeCompanyNameInput(value) {
   const normalizedValue = value.trim();
   if (!normalizedValue) {
@@ -145,13 +167,6 @@ function isMatchingAvailable(status) {
     return status.matching_available;
   }
   return status?.phase === "ready" || status?.phase === "ready_degraded";
-}
-
-function syncPresetSelection() {
-  const buttons = presetButtons.querySelectorAll("[data-preset-name]");
-  for (const button of buttons) {
-    button.classList.toggle("is-active", button.dataset.presetName === activePresetName);
-  }
 }
 
 function formatDuration(seconds) {
@@ -185,49 +200,134 @@ function humanizeReasons(reasons) {
   return (reasons || []).map((reason) => reason.replaceAll("_", " "));
 }
 
-function applyDemoPreset(preset) {
-  descriptionInput.value = preset.profile;
-  activePresetName = preset.name;
-  syncPresetSelection();
-  showResolutionBanner(`Loaded saved ${preset.name} demo profile.`);
-  resultsEmpty.hidden = false;
-  resultsEmpty.textContent = DEFAULT_EMPTY_STATE;
-  resultsList.innerHTML = "";
-  resultsMeta.textContent = `Ready to match ${preset.name}.`;
-  descriptionInput.focus();
+function getStatusCopy(status) {
+  if (!status) {
+    return {
+      statusMessage: "Starting live EU grant index...",
+      submitMessage: "Live indexing starts on page load. Watch the status panel while matching unlocks.",
+    };
+  }
+
+  if (status.snapshot_loaded && status.refresh_in_progress) {
+    return {
+      statusMessage: "Saved index is live while the background refresh catches up.",
+      submitMessage: "Matching is live from the saved index while the exhaustive live refresh continues.",
+    };
+  }
+
+  if (status.phase === "building") {
+    return {
+      statusMessage: "Indexing live grants now - first load can take a bit, progress updates below.",
+      submitMessage: "Waiting for live EU grant data. The first load runs automatically so judges can see progress.",
+    };
+  }
+
+  if ((status.phase === "ready" || status.phase === "ready_degraded") && status.matching_available) {
+    return {
+      statusMessage: "Index ready - matching is now live.",
+      submitMessage: "Matching is live. Short names like OpenAI auto-expand into full demo profiles.",
+    };
+  }
+
+  if (status.phase === "error" || status.degraded) {
+    return {
+      statusMessage: "Indexing hit a problem - matching is paused until the data build recovers.",
+      submitMessage: "The live data build needs attention before matching can run.",
+    };
+  }
+
+  return {
+    statusMessage: "Starting live EU grant index...",
+    submitMessage: "Live indexing starts on page load. Watch the status panel while matching unlocks.",
+  };
 }
 
-function renderDemoPresets() {
-  if (!demoPresetProfiles.length) {
-    demoPresets.hidden = true;
+function clearPendingPreResolve() {
+  if (resolveDebounceHandle !== null) {
+    window.clearTimeout(resolveDebounceHandle);
+    resolveDebounceHandle = null;
+  }
+}
+
+async function resolveCompanyProfile(query) {
+  const response = await fetch("/api/profile/resolve", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ query }),
+  });
+
+  if (!response.ok) {
+    throw new Error("Could not resolve company name.");
+  }
+
+  return response.json();
+}
+
+async function maybeResolveCompanyProfile(value, { source = "typing", force = false } = {}) {
+  const normalizedQuery = normalizeCompanyNameInput(value);
+  if (!normalizedQuery) {
+    if (source !== "submit") {
+      hideResolutionBanner();
+    }
+    return null;
+  }
+
+  if (!force && !looksLikeCompanyNameInput(value)) {
+    return null;
+  }
+
+  if (!force && (normalizedQuery === inFlightPreResolveQuery || normalizedQuery === lastPreResolvedQuery)) {
+    return null;
+  }
+
+  const resolveToken = ++latestResolveToken;
+  if (!force) {
+    inFlightPreResolveQuery = normalizedQuery;
+  }
+
+  try {
+    const resolution = await resolveCompanyProfile(value);
+    const currentQuery = normalizeCompanyNameInput(descriptionInput.value);
+    const responseStillRelevant = force || (resolveToken === latestResolveToken && currentQuery === normalizedQuery);
+    if (!responseStillRelevant) {
+      return null;
+    }
+
+    if (!resolution.resolved || !resolution.profile) {
+      return null;
+    }
+
+    descriptionInput.value = resolution.profile;
+    lastPreResolvedQuery = normalizedQuery;
+    showResolutionBanner(`Expanded ${resolution.display_name || "company name"} into a full demo profile.`);
+    return resolution.profile;
+  } catch (_error) {
+    if (source === "submit") {
+      throw new Error("Could not expand company name automatically. Add one or two sentences about what the company does.");
+    }
+    return null;
+  } finally {
+    if (!force && inFlightPreResolveQuery === normalizedQuery) {
+      inFlightPreResolveQuery = "";
+    }
+  }
+}
+
+function scheduleCompanyResolution() {
+  clearPendingPreResolve();
+  const value = descriptionInput.value;
+  if (!looksLikeCompanyNameInput(value)) {
     return;
   }
 
-  presetButtons.innerHTML = demoPresetProfiles
-    .map(
-      (preset) => `
-        <button
-          type="button"
-          class="preset-button"
-          data-preset-name="${escapeHtml(preset.name)}"
-        >
-          ${escapeHtml(preset.name)}
-        </button>
-      `,
-    )
-    .join("");
-
-  for (const button of presetButtons.querySelectorAll("[data-preset-name]")) {
-    button.addEventListener("click", () => {
-      const preset = demoPresetProfiles.find((item) => item.name === button.dataset.presetName);
-      if (preset) {
-        applyDemoPreset(preset);
-      }
-    });
-  }
-
-  syncPresetSelection();
+  resolveDebounceHandle = window.setTimeout(() => {
+    resolveDebounceHandle = null;
+    return maybeResolveCompanyProfile(value, { source: "typing" });
+  }, PROFILE_RESOLVE_DEBOUNCE_MS);
 }
+
 function updateStatus(status) {
   latestStatus = status;
   const totalPrefixes = status.total_prefixes || 0;
@@ -242,17 +342,18 @@ function updateStatus(status) {
       : status.phase === "building"
         ? "building"
         : "partial";
+  const statusCopyText = getStatusCopy(status);
+  const matchingAvailable = isMatchingAvailable(status);
+  const snapshotAge = formatDuration(status.snapshot_age_seconds);
 
-  statusCopy.textContent = status.message;
+  statusCopy.textContent = statusCopyText.statusMessage;
   statusPhase.textContent = status.phase;
   statusCount.textContent = String(status.indexed_grants || 0);
   statusPrefixes.textContent = `${scannedPrefixes} / ${totalPrefixes}`;
   statusFailures.textContent = String(failedPrefixes + truncatedPrefixes);
   statusCoverage.textContent = coverageLabel;
   statusEmbeddings.textContent = status.embeddings_ready ? "ready" : "warming up";
-  statusSource.textContent = status.snapshot_loaded
-    ? `saved index (${formatDuration(status.snapshot_age_seconds)} old)`
-    : "live crawl";
+  statusSource.textContent = status.snapshot_loaded ? `saved index (${snapshotAge} old)` : "live crawl";
   statusRefresh.textContent = status.refresh_in_progress
     ? status.snapshot_loaded
       ? "refreshing in background"
@@ -263,15 +364,9 @@ function updateStatus(status) {
       ? `${status.current_prefix} p.${status.current_page}`
       : "—";
   statusUpdated.textContent = formatLastProgress(status.last_progress_at);
-  statusBar.style.width = `${status.phase === "ready" || (status.snapshot_loaded && !status.refresh_in_progress) ? 100 : ratio}%`;
-  matchButton.disabled = !isMatchingAvailable(status);
-  if (status.snapshot_loaded && status.refresh_in_progress) {
-    submitHint.textContent = "Using saved index while the exhaustive live refresh continues in the background.";
-  } else {
-    submitHint.textContent = isMatchingAvailable(status)
-      ? DEFAULT_SUBMIT_HINT
-      : status.message || "Matching becomes available when the live grant index is ready.";
-  }
+  statusBar.style.width = `${status.phase === "ready" || status.phase === "ready_degraded" ? 100 : ratio}%`;
+  matchButton.disabled = !matchingAvailable;
+  submitHint.textContent = statusCopyText.submitMessage;
 
   if (status.degraded && status.degradation_reasons?.length) {
     statusDegraded.hidden = false;
@@ -291,22 +386,6 @@ function getValidationMessage(errorPayload) {
       .join(". ");
   }
   return errorPayload?.detail?.message || errorPayload?.message || null;
-}
-
-async function resolveCompanyProfile(query) {
-  const response = await fetch("/api/profile/resolve", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ query }),
-  });
-
-  if (!response.ok) {
-    throw new Error("Could not resolve company name.");
-  }
-
-  return response.json();
 }
 
 function scheduleStatusPoll(delayMs) {
@@ -330,7 +409,7 @@ async function fetchStatus() {
     const status = await response.json();
     consecutiveStatusFailures = 0;
     updateStatus(status);
-    scheduleStatusPoll(status.phase === "building" ? 2500 : 5000);
+    scheduleStatusPoll(status.phase === "building" || status.refresh_in_progress ? 2500 : 5000);
   } catch (error) {
     consecutiveStatusFailures += 1;
     updateStatus({
@@ -348,11 +427,35 @@ async function fetchStatus() {
       degradation_reasons: ["status_poll_failed"],
       snapshot_loaded: false,
       refresh_in_progress: false,
+      current_prefix: null,
+      current_page: null,
+      last_progress_at: null,
+      snapshot_age_seconds: null,
     });
     scheduleStatusPoll(Math.min(15000, 2500 * (consecutiveStatusFailures + 1)));
   } finally {
     window.clearTimeout(timeoutHandle);
     statusPollInFlight = false;
+  }
+}
+
+async function applyQuickFillDemoProfile() {
+  quickFillOpenAIButton.disabled = true;
+  try {
+    const resolvedProfile = await maybeResolveCompanyProfile("OpenAI", { source: "quick-fill", force: true });
+    if (!resolvedProfile) {
+      throw new Error("Could not load the OpenAI demo profile.");
+    }
+    resultsEmpty.hidden = false;
+    resultsEmpty.textContent = DEFAULT_EMPTY_STATE;
+    resultsList.innerHTML = "";
+    resultsMeta.textContent = "OpenAI demo profile loaded. Ready to match.";
+    updateDocumentTitle();
+    descriptionInput.focus();
+  } catch (error) {
+    showResolutionBanner(error.message || "Could not load the OpenAI demo profile.");
+  } finally {
+    quickFillOpenAIButton.disabled = false;
   }
 }
 
@@ -370,23 +473,11 @@ async function submitMatch(event) {
 
   try {
     if (looksLikeCompanyNameInput(companyDescription)) {
-      hideResolutionBanner();
-      const resolution = await resolveCompanyProfile(companyDescription);
-      if (!resolution.resolved || !resolution.profile) {
-        throw new Error(
-          resolution.message || "Could not expand company name automatically. Add one or two sentences about what the company does.",
-        );
+      const resolvedProfile = await maybeResolveCompanyProfile(companyDescription, { source: "submit", force: true });
+      if (!resolvedProfile) {
+        throw new Error("Could not expand company name automatically. Add one or two sentences about what the company does.");
       }
-
-      companyDescription = resolution.profile;
-      descriptionInput.value = companyDescription;
-      activePresetName = null;
-      syncPresetSelection();
-      if (resolution.source === "demo_profile") {
-        showResolutionBanner(`Using saved ${resolution.display_name} demo profile.`);
-      } else {
-        showResolutionBanner(`Expanded ${resolution.display_name || "company name"} with AI.`);
-      }
+      companyDescription = resolvedProfile;
     } else {
       hideResolutionBanner();
       if (companyDescription.length < MIN_DESCRIPTION_LENGTH) {
@@ -411,6 +502,7 @@ async function submitMatch(event) {
     const payload = await response.json();
     renderResults(payload.results || [], payload.indexed_grants || 0);
   } catch (error) {
+    updateDocumentTitle();
     resultsEmpty.hidden = false;
     resultsEmpty.textContent = error.message || "Matching failed.";
     resultsList.innerHTML = "";
@@ -422,13 +514,22 @@ async function submitMatch(event) {
 }
 
 descriptionInput.addEventListener("input", () => {
-  hideResolutionBanner();
-  if (activePresetName !== null) {
-    activePresetName = null;
-    syncPresetSelection();
+  if (!looksLikeCompanyNameInput(descriptionInput.value)) {
+    clearPendingPreResolve();
+    hideResolutionBanner();
+    return;
   }
+  scheduleCompanyResolution();
 });
 
+descriptionInput.addEventListener("blur", () => {
+  clearPendingPreResolve();
+  return maybeResolveCompanyProfile(descriptionInput.value, { source: "blur" });
+});
+
+quickFillOpenAIButton.addEventListener("click", applyQuickFillDemoProfile);
+matchButton.disabled = true;
+submitHint.textContent = getStatusCopy(null).submitMessage;
+updateDocumentTitle();
 form.addEventListener("submit", submitMatch);
-renderDemoPresets();
 fetchStatus();

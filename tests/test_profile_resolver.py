@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from backend.profile_resolver import DemoProfileResolver, load_demo_profiles, resolve_demo_profiles_path
+from backend.profile_resolver import DemoProfileResolver, OpenAICompanyProfileExpander, load_demo_profiles, resolve_demo_profiles_path
 
 
 def test_demo_profile_resolver_returns_openai_profile_case_insensitive():
@@ -92,3 +92,67 @@ def test_resolved_query_message_is_stable_when_unresolved():
     assert resolution.message == (
         "Could not expand company name automatically. Add one or two sentences about what the company does."
     )
+
+
+def test_demo_profile_resolver_reports_expander_failures_and_returns_unresolved():
+    captured = []
+
+    class FailingExpander:
+        def expand(self, query: str):
+            raise RuntimeError("profile expansion failed")
+
+    resolver = DemoProfileResolver(
+        expander=FailingExpander(),
+        on_expander_failure=lambda exc, *, context: captured.append((str(exc), context)),
+    )
+
+    resolution = resolver.resolve("Acme Robotics")
+
+    assert resolution.resolved is False
+    assert resolution.source == "unresolved"
+    assert captured == [(
+        "profile expansion failed",
+        {
+            "query": "Acme Robotics",
+            "fallback_used": True,
+        },
+    )]
+
+
+def test_openai_company_profile_expander_uses_responses_api():
+    class FakeResponses:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def parse(self, **kwargs):
+            self.calls.append(kwargs)
+            return type(
+                "ParsedResponse",
+                (),
+                {
+                    "output_parsed": type(
+                        "ExpandedProfile",
+                        (),
+                        {
+                            "display_name": "Acme Robotics",
+                            "profile": "We build robotics systems for industrial automation across Europe.",
+                        },
+                    )()
+                },
+            )()
+
+    fake_responses = FakeResponses()
+    fake_client = type("FakeClient", (), {"responses": fake_responses})()
+    expander = OpenAICompanyProfileExpander(
+        api_key="test",
+        model="gpt-5.4-mini-2026-03-17",
+        client=fake_client,
+        reasoning_effort="none",
+    )
+
+    display_name, profile = expander.expand("Acme Robotics")
+
+    assert display_name == "Acme Robotics"
+    assert "industrial automation" in profile
+    assert fake_responses.calls[0]["model"] == "gpt-5.4-mini-2026-03-17"
+    assert fake_responses.calls[0]["reasoning"] == {"effort": "none"}

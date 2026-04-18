@@ -69,7 +69,7 @@ body {
   z-index: 1;
   width: min(1180px, calc(100vw - 2rem));
   margin: 0 auto;
-  padding: 3.5rem 0 4rem;
+  padding: 3.5rem 0 2rem;
 }
 
 .hero {
@@ -195,7 +195,10 @@ body {
   box-shadow: 0 0 0 4px rgba(0, 109, 91, 0.08);
 }
 
-.demo-presets {
+.quick-fill-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
   margin-bottom: 1rem;
   padding: 0.95rem 1rem;
   border: 1px solid var(--line);
@@ -203,20 +206,7 @@ body {
   background: rgba(255, 255, 255, 0.52);
 }
 
-.preset-copy {
-  margin: 0 0 0.75rem;
-  color: var(--muted);
-  font-size: 0.92rem;
-  line-height: 1.5;
-}
-
-.preset-buttons {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.65rem;
-}
-
-.preset-button {
+.secondary-button {
   padding: 0.7rem 1rem;
   background: rgba(255, 252, 247, 0.88);
   color: var(--ink);
@@ -224,15 +214,9 @@ body {
   box-shadow: none;
 }
 
-.preset-button:hover:not(:disabled) {
+.secondary-button:hover:not(:disabled) {
   transform: translateY(-1px);
   border-color: rgba(0, 109, 91, 0.32);
-}
-
-.preset-button.is-active {
-  background: linear-gradient(135deg, rgba(0, 109, 91, 0.16), rgba(0, 109, 91, 0.06));
-  border-color: rgba(0, 109, 91, 0.42);
-  color: var(--accent-strong);
 }
 
 .form-row {
@@ -269,6 +253,15 @@ button:disabled {
   margin: 0;
   font-size: 0.92rem;
   line-height: 1.55;
+}
+
+#resolution-banner {
+  margin-bottom: 0.85rem;
+  padding: 0.85rem 1rem;
+  border-radius: var(--radius-md);
+  background: rgba(0, 109, 91, 0.1);
+  border: 1px solid rgba(0, 109, 91, 0.16);
+  color: var(--accent-strong);
 }
 
 .status-meter {
@@ -381,6 +374,21 @@ button:disabled {
   font-size: 1rem;
 }
 
+.score-chip--high {
+  background: rgba(0, 109, 91, 0.14);
+  color: var(--accent-strong);
+}
+
+.score-chip--medium {
+  background: rgba(201, 106, 43, 0.16);
+  color: #8a4b1d;
+}
+
+.score-chip--low {
+  background: rgba(177, 45, 26, 0.14);
+  color: var(--danger);
+}
+
 .meta-row,
 .keyword-row {
   display: flex;
@@ -436,6 +444,32 @@ button:disabled {
   border: 0;
 }
 
+.site-footer {
+  position: relative;
+  z-index: 1;
+  width: min(1180px, calc(100vw - 2rem));
+  margin: 0 auto;
+  padding: 0 0 2.75rem;
+}
+
+.site-footer p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.site-footer a {
+  color: var(--accent-strong);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.site-footer a:hover {
+  text-decoration: underline;
+}
+
 @keyframes rise-in {
   from {
     opacity: 0;
@@ -453,7 +487,7 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 
-  .preset-buttons,
+  .quick-fill-row,
   .results-head,
   .result-head,
   .form-row {

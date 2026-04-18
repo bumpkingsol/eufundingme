@@ -15,6 +15,7 @@ from .models import (
     ParsedLLMMatch,
     ParsedLLMMatchList,
 )
+from .openai_client import build_reasoning
 
 
 def clamp_score(value: int | float) -> int:
@@ -28,9 +29,11 @@ class OpenAIScorer:
         model: str,
         api_key: str | None = None,
         client: OpenAI | None = None,
+        reasoning_effort: str | None = None,
     ) -> None:
         self.model = model
         self.client = client or OpenAI(api_key=api_key)
+        self.reasoning_effort = reasoning_effort
 
     def score(
         self,
@@ -51,28 +54,23 @@ class OpenAIScorer:
             for candidate in candidates
         ]
 
-        completion = self.client.chat.completions.parse(
+        completion = self.client.responses.parse(
             model=self.model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You rank EU grants for a company. Only use the provided candidates. "
-                        "Return concise, concrete reasoning. Scores must be 0-100."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"Company description:\n{company_description}\n\n"
-                        "Candidate grants:\n"
-                        f"{json.dumps(candidate_payload, ensure_ascii=True)}"
-                    ),
-                },
-            ],
-            response_format=ParsedLLMMatchList,
+            instructions=(
+                "You rank EU grants for a company. Only use the provided candidates. "
+                "Return concise, concrete reasoning. Reference specific grant requirements, "
+                "programme priorities, or keywords from the candidate grant and specific company capabilities "
+                "from the input profile. Keep the guidance actionable. Scores must be 0-100."
+            ),
+            input=(
+                f"Company description:\n{company_description}\n\n"
+                "Candidate grants:\n"
+                f"{json.dumps(candidate_payload, ensure_ascii=True)}"
+            ),
+            text_format=ParsedLLMMatchList,
+            reasoning=build_reasoning(self.reasoning_effort),
         )
-        parsed = completion.choices[0].message.parsed
+        parsed = completion.output_parsed
         if parsed is None:
             return []
         return parsed.matches
@@ -84,6 +82,7 @@ class MatchService:
         *,
         shortlister: Callable[[str, Sequence[GrantRecord], int], list[MatchCandidate]] | None = None,
         scorer: Callable[[str, Sequence[MatchCandidate]], Sequence[ParsedLLMMatch]] | None = None,
+        on_scorer_failure: Callable[[Exception], None] | Callable[..., None] | None = None,
     ) -> None:
         self.shortlister = shortlister or (
             lambda company_description, grants, limit: lexical_shortlist(
@@ -93,6 +92,7 @@ class MatchService:
             )
         )
         self.scorer = scorer
+        self.on_scorer_failure = on_scorer_failure
 
     def match(
         self,
@@ -128,7 +128,16 @@ class MatchService:
                         degradation_reasons=degradation_reasons,
                         results=results,
                     )
-            except Exception:
+            except Exception as exc:
+                if self.on_scorer_failure is not None:
+                    self.on_scorer_failure(
+                        exc,
+                        context={
+                            "candidate_count": len(candidates),
+                            "grant_count": len(grants),
+                            "fallback_used": True,
+                        },
+                    )
                 if "openai_scoring_failed" not in degradation_reasons:
                     degradation_reasons.append("openai_scoring_failed")
 

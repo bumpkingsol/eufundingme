@@ -64,10 +64,8 @@ def test_root_route_serves_frontend_shell():
     assert "Find EU funding for your company in 30 seconds." in response.text
     assert 'rel="icon"' in response.text
     assert 'id="resolution-banner"' in response.text
-    assert 'id="demo-presets"' in response.text
-    assert "Use a saved demo profile" in response.text
-    assert "OpenAI" in response.text
-    assert "Northvolt" in response.text
+    assert 'id="quick-fill-openai"' in response.text
+    assert "Try OpenAI" in response.text
     assert "novalidate" in response.text
     assert "status-failures" in response.text
     assert "status-coverage" in response.text

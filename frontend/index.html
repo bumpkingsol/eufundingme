@@ -8,10 +8,12 @@
       name="description"
       content="Find EU funding for your company in 30 seconds."
     />
-    <link
-      rel="icon"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%23006d5b'/%3E%3Cpath d='M18 24h28v6H18zm0 10h20v6H18zm0 10h28v6H18z' fill='%23fff7ec'/%3E%3C/svg%3E"
+    <meta property="og:title" content="EU Grant Matcher" />
+    <meta
+      property="og:description"
+      content="Find EU funding for your company in 30 seconds."
     />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🇪🇺</text></svg>">
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -66,9 +68,11 @@
 
             <form id="match-form" class="match-form" novalidate>
               <label class="sr-only" for="company-description">Company description</label>
-              <div id="demo-presets" class="demo-presets" aria-label="Saved demo profiles">
-                <p class="preset-copy">Use a saved demo profile for the scripted flow, or type a company name for a live audience test.</p>
-                <div id="preset-buttons" class="preset-buttons"></div>
+              <div class="quick-fill-row">
+                <button id="quick-fill-openai" class="secondary-button" type="button">Try OpenAI</button>
+                <p class="submit-hint">
+                  One click loads the demo profile, or type a company name like <code>OpenAI</code> and we auto-expand it.
+                </p>
               </div>
               <p id="resolution-banner" class="submit-hint" hidden></p>
               <textarea
@@ -82,7 +86,7 @@
               <div class="form-row">
                 <button id="match-button" type="submit">Find Grants</button>
                 <p id="submit-hint" class="submit-hint">
-                  The first run builds a live grant index, then matching becomes instant.
+                  Live indexing starts on page load. First load can take a short while; watch the status panel while matching unlocks.
                 </p>
               </div>
             </form>
@@ -161,6 +165,13 @@
           <div id="results-list" class="results-list"></div>
         </section>
       </main>
+
+      <footer class="site-footer">
+        <p>
+          Built at Codex x Sentry Hackathon, Vienna, April 18 2026 |
+          <a href="https://github.com/bumpkingsol/eufundingme" target="_blank" rel="noreferrer">Open Source</a>
+        </p>
+      </footer>
     </div>
 
     <script src="/app.js" defer></script>

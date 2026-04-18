@@ -21,9 +21,17 @@ Set these before running the app:
 
 ```bash
 export OPENAI_API_KEY=...
-export OPENAI_MATCH_MODEL=gpt-4o-2024-08-06
+export OPENAI_MATCH_MODEL=gpt-5.4-mini-2026-03-17
+export OPENAI_PROFILE_EXPANSION_MODEL=gpt-5.4-mini-2026-03-17
 export OPENAI_EMBEDDING_MODEL=text-embedding-3-large
+export OPENAI_TIMEOUT_SECONDS=30
+export OPENAI_MAX_RETRIES=2
+export OPENAI_MATCH_REASONING_EFFORT=low
+export OPENAI_PROFILE_REASONING_EFFORT=none
 export SENTRY_DSN=...
+export SENTRY_ENVIRONMENT=development
+export SENTRY_RELEASE=...
+export SENTRY_SEND_DEFAULT_PII=false
 ```
 
 Optional overrides:
@@ -55,6 +63,8 @@ uvicorn backend.app:app --reload
 
 Open [http://127.0.0.1:8000](http://127.0.0.1:8000).
 
+The web UI includes a one-click `Try OpenAI` demo profile for the first search.
+
 ## Test
 
 Use `python -m pytest` from the project root.
@@ -85,6 +95,9 @@ python -m backend.cli index
 python -m backend.cli status
 python -m backend.cli profile --query "OpenAI"
 python -m backend.cli health
+
+# Repo-local shim (expects the repo .venv, or an environment where backend dependencies are installed)
+scripts/eufundingme match --description "We build AI safety tooling for enterprise deployment across Europe."
 ```
 
 `eufundingme match` emits:
@@ -137,6 +150,8 @@ curl http://127.0.0.1:8000/api/match \
   -d '{"company_description":"We build AI safety tooling for enterprise deployment across Europe."}'
 ```
 
+Successful `POST /api/match` responses include a top-level `request_id` alongside `indexed_grants` and `results`.
+
 ## Notes
 
 - The EC API ignores server-side status filters, so indexing uses call-prefix fan-out and client-side filtering.
@@ -145,8 +160,10 @@ curl http://127.0.0.1:8000/api/match \
 - By default the crawler runs exhaustively across pages for each prefix. Set `EC_MAX_PAGES_PER_PREFIX` only if you want an explicit crawl cap; capped crawls are reported as degraded coverage.
 - Warm-started runs show `ready_degraded` while a background refresh is in progress. Matching stays available from the saved snapshot, but partial in-progress crawl data is never used for results.
 - `INDEX_SNAPSHOT_MAX_AGE_HOURS` marks saved data as stale for operator visibility, and `INDEX_REFRESH_STALL_SECONDS` adds a `refresh_delayed` degradation signal if live crawl progress stops updating.
-- Known demo companies such as `OpenAI`, `Northvolt`, and `Doctolib` resolve from checked-in profiles and are also available as one-click presets in the UI.
+- Known demo companies such as `OpenAI`, `Northvolt`, and `Doctolib` resolve from checked-in profiles.
 - Unknown short company names use OpenAI expansion only when `OPENAI_API_KEY` is configured. Without it, the UI asks for one or two descriptive sentences instead of sending the short name into `/api/match`.
+- The backend uses pinned OpenAI model snapshots for stable production behavior; override them with env vars if needed.
+- Sentry captures backend failures, OpenAI calls, and core API traces. Request bodies and sensitive headers are scrubbed before events are sent.
 - If `OPENAI_API_KEY` is not set, the app stays available in lexical-only mode and reports degraded matching quality.
 - If embeddings or AI scoring fail at runtime, the app falls back to lexical ranking and marks the match/index state as degraded.
 - If `SENTRY_DSN` is not set, the app still runs but no Sentry monitoring is emitted.
@@ -154,7 +171,11 @@ curl http://127.0.0.1:8000/api/match \
 ## Demo Flow
 
 1. Start the app. If a saved snapshot exists, the app becomes usable immediately in `ready_degraded` while the exhaustive live refresh continues in the background.
-2. Click the `OpenAI` preset to run the scripted first search.
-3. Click `Northvolt` or `Doctolib` to show a contrasting sector.
+2. Click `Try OpenAI` to run the scripted first search.
+3. Type `Northvolt` or `Doctolib` to show a contrasting sector.
 4. For a live audience test, type a company name directly.
 5. If the name is known, the app expands it from the saved demo profiles. If the name is unknown and OpenAI is configured, the app expands it with AI before matching.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

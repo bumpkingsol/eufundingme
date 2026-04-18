@@ -2,13 +2,10 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-import json
-import logging
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-import sentry_sdk
 
 from .config import Settings, load_settings
 from .embeddings import EmbeddingService, embedding_shortlist, lexical_shortlist
@@ -22,21 +19,20 @@ from .models import (
     ProfileResolveResponse,
     ReadinessResponse,
 )
-from .profile_resolver import DemoProfileResolver, OpenAICompanyProfileExpander, build_demo_presets
+from .observability import bind_request_context, capture_backend_exception, initialize_sentry
+from .openai_client import build_openai_client
+from .profile_resolver import DemoProfileResolver, OpenAICompanyProfileExpander
 from .request_ids import resolve_request_id
 from .state import AppState
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
-INDEX_HTML = FRONTEND_DIR / "index.html"
 FAVICON_SVG = (
     "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>"
     "<rect width='64' height='64' rx='18' fill='#006d5b'/>"
     "<path d='M18 24h28v6H18zm0 10h20v6H18zm0 10h28v6H18z' fill='#fff7ec'/>"
     "</svg>"
 )
-_SENTRY_INITIALIZED = False
 MATCH_NOT_READY_ERROR_CODE = "INDEX_NOT_READY"
-logger = logging.getLogger(__name__)
 
 
 def is_match_ready(status: IndexStatus) -> bool:
@@ -55,31 +51,20 @@ def build_match_unavailable_error(status: IndexStatus, request_id: str | None = 
     return payload
 
 
-def initialize_sentry(settings: Settings) -> None:
-    global _SENTRY_INITIALIZED
-    if _SENTRY_INITIALIZED or not settings.sentry_dsn:
-        return
-
-    sentry_sdk.init(
-        dsn=settings.sentry_dsn,
-        send_default_pii=True,
-        traces_sample_rate=settings.sentry_traces_sample_rate,
-    )
-    _SENTRY_INITIALIZED = True
-
-
 def build_match_service(settings: Settings, app_state: AppState) -> MatchService:
     embedding_service = None
     scorer = None
+    openai_client = build_openai_client(settings)
 
     if settings.openai_api_key:
         embedding_service = EmbeddingService(
             model=settings.openai_embedding_model,
-            api_key=settings.openai_api_key,
+            client=openai_client,
         )
         scorer = OpenAIScorer(
             model=settings.openai_match_model,
-            api_key=settings.openai_api_key,
+            client=openai_client,
+            reasoning_effort=settings.openai_match_reasoning_effort,
         )
 
     def shortlist(company_description, grants, limit):
@@ -95,13 +80,29 @@ def build_match_service(settings: Settings, app_state: AppState) -> MatchService
                         limit=limit,
                     )
                 except Exception as exc:
-                    logger.exception("Embedding shortlist failed")
-                    sentry_sdk.capture_exception(exc)
+                    capture_backend_exception(
+                        exc,
+                        component="matcher",
+                        operation="embedding_shortlist",
+                        model=embedding_service.model,
+                        fallback_used=True,
+                        context={
+                            "candidate_pool": len(grants),
+                        },
+                    )
         return lexical_shortlist(company_description, grants, limit=limit)
 
     return MatchService(
         shortlister=shortlist,
         scorer=scorer.score if scorer is not None else None,
+        on_scorer_failure=lambda exc, *, context: capture_backend_exception(
+            exc,
+            component="matcher",
+            operation="score_candidates",
+            model=settings.openai_match_model,
+            fallback_used=True,
+            context=context,
+        ),
     )
 
 
@@ -116,11 +117,12 @@ def create_app(
     initialize_sentry(active_settings)
 
     if app_state is None:
+        openai_client = build_openai_client(active_settings)
         index_embedding_service = None
         if active_settings.openai_api_key:
             index_embedding_service = EmbeddingService(
                 model=active_settings.openai_embedding_model,
-                api_key=active_settings.openai_api_key,
+                client=openai_client,
             )
         app_state = AppState(
             settings=active_settings,
@@ -140,20 +142,24 @@ def create_app(
         expander=OpenAICompanyProfileExpander(
             api_key=active_settings.openai_api_key,
             model=active_settings.openai_profile_expansion_model,
+            client=build_openai_client(active_settings),
+            reasoning_effort=active_settings.openai_profile_reasoning_effort,
         )
         if active_settings.openai_api_key
-        else None
+        else None,
+        on_expander_failure=lambda exc, *, context: capture_backend_exception(
+            exc,
+            component="profile_resolver",
+            operation="expand_company_profile",
+            model=active_settings.openai_profile_expansion_model,
+            fallback_used=True,
+            context=context,
+        ),
     )
-    app.state.demo_presets = build_demo_presets(getattr(app.state.profile_resolver, "profiles", None))
 
     @app.get("/", include_in_schema=False)
-    def index() -> HTMLResponse:
-        html = INDEX_HTML.read_text(encoding="utf-8")
-        preset_script = (
-            f'<script>window.__DEMO_PRESETS__ = {json.dumps(app.state.demo_presets)};</script>\n'
-            '    <script src="/app.js" defer></script>'
-        )
-        return HTMLResponse(html.replace('<script src="/app.js" defer></script>', preset_script))
+    def index() -> FileResponse:
+        return FileResponse(FRONTEND_DIR / "index.html")
 
     @app.get("/styles.css", include_in_schema=False)
     def styles() -> FileResponse:
@@ -200,7 +206,16 @@ def create_app(
         return app.state.app_state.get_status()
 
     @app.post("/api/profile/resolve", response_model=ProfileResolveResponse)
-    def profile_resolve(payload: ProfileResolveRequest) -> ProfileResolveResponse:
+    def profile_resolve(
+        payload: ProfileResolveRequest,
+        x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
+    ) -> ProfileResolveResponse:
+        request_id = resolve_request_id(x_request_id)
+        bind_request_context(
+            operation="profile_resolve",
+            request_id=request_id,
+            model=active_settings.openai_profile_expansion_model if active_settings.openai_api_key else None,
+        )
         resolution = app.state.profile_resolver.resolve(payload.query)
         return ProfileResolveResponse(
             resolved=resolution.resolved,
@@ -217,6 +232,11 @@ def create_app(
     ) -> MatchResponse:
         app.state.app_state.ensure_indexing_started()
         request_id = resolve_request_id(x_request_id)
+        bind_request_context(
+            operation="match",
+            request_id=request_id,
+            model=active_settings.openai_match_model if active_settings.openai_api_key else None,
+        )
         status = app.state.app_state.get_status()
         if not is_match_ready(status):
             raise HTTPException(
@@ -225,13 +245,14 @@ def create_app(
             )
 
         grants = app.state.app_state.get_grants()
-        return app.state.match_service.match(
+        match_response = app.state.match_service.match(
             payload.company_description,
             grants,
             now=datetime.now(timezone.utc),
             limit=app.state.settings.shortlist_limit,
             base_degradation_reasons=status.degradation_reasons,
         )
+        return match_response.model_copy(update={"request_id": request_id})
 
     @app.get("/sentry-debug")
     def sentry_debug() -> None:

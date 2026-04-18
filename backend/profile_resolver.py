@@ -8,6 +8,8 @@ from pathlib import Path
 from openai import OpenAI
 from pydantic import BaseModel
 
+from .openai_client import build_reasoning
+
 DEMO_PROFILES_DEFAULT_NAME = "DEMO-PROFILES.md"
 DEFAULT_DEMO_PRESET_NAMES = ("OpenAI", "Northvolt", "Doctolib")
 PROFILE_SECTION_PATTERN = re.compile(
@@ -39,32 +41,27 @@ class OpenAICompanyProfileExpander:
         self,
         *,
         api_key: str,
-        model: str = "gpt-4o-2024-08-06",
+        model: str = "gpt-5.4-mini-2026-03-17",
         client: OpenAI | None = None,
+        reasoning_effort: str | None = None,
     ) -> None:
         self.model = model
         self.client = client or OpenAI(api_key=api_key)
+        self.reasoning_effort = reasoning_effort
 
     def expand(self, query: str) -> tuple[str, str] | None:
-        completion = self.client.beta.chat.completions.parse(
+        completion = self.client.responses.parse(
             model=self.model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You expand a company name into a concise company profile for EU grant matching. "
-                        "Return 4-6 factual sentences describing what the company builds, who it serves, "
-                        "and its strategic focus areas. Do not mention uncertainty."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": f"Company name: {query}",
-                },
-            ],
-            response_format=ExpandedCompanyProfile,
+            instructions=(
+                "You expand a company name into a concise company profile for EU grant matching. "
+                "Return 4-6 factual sentences describing what the company builds, who it serves, "
+                "and its strategic focus areas. Do not mention uncertainty."
+            ),
+            input=f"Company name: {query}",
+            text_format=ExpandedCompanyProfile,
+            reasoning=build_reasoning(self.reasoning_effort),
         )
-        parsed = completion.choices[0].message.parsed
+        parsed = completion.output_parsed
         if parsed is None:
             return None
         return parsed.display_name.strip(), parsed.profile.strip()
@@ -127,9 +124,11 @@ class DemoProfileResolver:
         *,
         profiles: dict[str, tuple[str, str]] | None = None,
         expander: object | None = None,
+        on_expander_failure: object | None = None,
     ) -> None:
         self.profiles = profiles or load_demo_profiles()
         self.expander = expander
+        self.on_expander_failure = on_expander_failure
 
     def resolve(self, query: str) -> ProfileResolution:
         normalized_query = normalize_company_query(query)
@@ -154,7 +153,18 @@ class DemoProfileResolver:
             )
 
         if self.expander is not None:
-            expanded = self.expander.expand(query)
+            try:
+                expanded = self.expander.expand(query)
+            except Exception as exc:
+                if self.on_expander_failure is not None:
+                    self.on_expander_failure(
+                        exc,
+                        context={
+                            "query": query,
+                            "fallback_used": True,
+                        },
+                    )
+                expanded = None
             if expanded is not None:
                 display_name, description = expanded
                 return ProfileResolution(

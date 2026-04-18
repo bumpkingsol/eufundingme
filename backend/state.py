@@ -4,13 +4,12 @@ import logging
 from datetime import datetime, timezone
 from threading import Lock, Thread
 
-import sentry_sdk
-
 from .config import Settings
 from .ec_client import ECSearchClient
 from .embeddings import EmbeddingService, build_grant_embeddings
 from .indexer import CALL_PREFIXES, build_grant_index
 from .models import GrantRecord, IndexBuildProgress, IndexStatus
+from .observability import capture_backend_exception
 from .snapshot_store import IndexSnapshotStore, grant_from_snapshot_payload
 
 logger = logging.getLogger(__name__)
@@ -185,12 +184,21 @@ class AppState:
                     )
                     embeddings_ready = bool(grant_embeddings)
                 except Exception as exc:
+                    capture_backend_exception(
+                        exc,
+                        component="indexer",
+                        operation="build_grant_embeddings",
+                        model=getattr(self.embedding_service, "model", None),
+                        fallback_used=True,
+                        context={
+                            "grant_count": len(grants),
+                        },
+                    )
                     grant_embeddings = {}
                     embeddings_ready = False
                     if "embedding_build_failed" not in degradation_reasons:
                         degradation_reasons.append("embedding_build_failed")
                     logger.exception("Grant embedding build failed")
-                    sentry_sdk.capture_exception(exc)
             else:
                 if "lexical_only_mode" not in degradation_reasons:
                     degradation_reasons.append("lexical_only_mode")
@@ -255,6 +263,16 @@ class AppState:
                 written_at=finished_at,
             )
         except Exception as exc:
+            capture_backend_exception(
+                exc,
+                component="indexer",
+                operation="build_grant_index",
+                fallback_used=False,
+                context={
+                    "scanned_prefixes": self._status.scanned_prefixes,
+                    "failed_prefixes": self._status.failed_prefixes,
+                },
+            )
             finished_at = datetime.now(timezone.utc).isoformat()
             with self._lock:
                 if self._snapshot_loaded and self._grants:
@@ -299,7 +317,6 @@ class AppState:
                         refresh_indexed_grants=self._status.refresh_indexed_grants,
                     )
             logger.exception("Grant index build failed")
-            sentry_sdk.capture_exception(exc)
 
     def _update_progress(self, progress: IndexBuildProgress) -> None:
         with self._lock:
@@ -320,67 +337,58 @@ class AppState:
                 reasons = ["prefix_fetch_failed"] if progress.failed_prefixes > 0 else []
                 embeddings_ready = False
 
-            if progress.failed_prefixes > 0 and "prefix_fetch_failed" not in reasons:
-                reasons.append("prefix_fetch_failed")
-
-            self._status = IndexStatus(
-                phase=phase,
-                message=message,
-                indexed_grants=indexed_grants,
-                scanned_prefixes=progress.scanned_prefixes,
-                total_prefixes=progress.total_prefixes,
-                failed_prefixes=progress.failed_prefixes,
-                truncated_prefixes=self._status.truncated_prefixes,
-                embeddings_ready=embeddings_ready,
-                degraded=degraded,
-                coverage_complete=False,
-                matching_available=matching_available,
-                degradation_reasons=_dedupe_reasons(reasons),
-                started_at=self._status.started_at,
-                finished_at=None,
-                current_prefix=progress.current_prefix,
-                current_page=progress.current_page,
-                pages_fetched=progress.pages_fetched,
-                requests_completed=progress.requests_completed,
-                last_progress_at=progress.last_progress_at,
-                snapshot_loaded=self._snapshot_loaded,
-                snapshot_age_seconds=self._snapshot_age_seconds(),
-                refresh_in_progress=True,
-                refresh_indexed_grants=progress.indexed_grants,
+            self._status = self._status.model_copy(
+                update={
+                    "phase": phase,
+                    "message": message,
+                    "indexed_grants": indexed_grants,
+                    "scanned_prefixes": progress.scanned_prefixes,
+                    "total_prefixes": progress.total_prefixes,
+                    "failed_prefixes": progress.failed_prefixes,
+                    "degraded": degraded,
+                    "coverage_complete": False,
+                    "matching_available": matching_available,
+                    "degradation_reasons": reasons,
+                    "current_prefix": progress.current_prefix,
+                    "current_page": progress.current_page,
+                    "pages_fetched": progress.pages_fetched,
+                    "requests_completed": progress.requests_completed,
+                    "last_progress_at": progress.last_progress_at,
+                    "refresh_in_progress": True,
+                    "refresh_indexed_grants": progress.indexed_grants,
+                    "snapshot_loaded": self._snapshot_loaded,
+                    "snapshot_age_seconds": self._snapshot_age_seconds()
+                    if self._snapshot_loaded
+                    else None,
+                    "embeddings_ready": embeddings_ready,
+                }
             )
 
-    def _snapshot_age_seconds(self, *, reference_time: datetime | None = None) -> int | None:
+    def _snapshot_age_seconds(self, reference_time: datetime | None = None) -> int | None:
         if self._snapshot_written_at is None:
             return None
         now = reference_time or datetime.now(timezone.utc)
         return max(0, int((now - self._snapshot_written_at).total_seconds()))
 
-    def _decorate_status(self, status: IndexStatus) -> IndexStatus:
-        decorated = status.model_copy(deep=True)
-        decorated.snapshot_loaded = self._snapshot_loaded
-        decorated.snapshot_age_seconds = self._snapshot_age_seconds() if self._snapshot_loaded else None
-
-        reasons = list(decorated.degradation_reasons)
-        if self._snapshot_loaded and "stale_snapshot_mode" not in reasons:
-            reasons.append("stale_snapshot_mode")
-
-        if decorated.refresh_in_progress and decorated.last_progress_at:
-            try:
-                last_progress_at = datetime.fromisoformat(decorated.last_progress_at)
-            except ValueError:
-                last_progress_at = None
-            if last_progress_at is not None:
-                stalled_for = (datetime.now(timezone.utc) - last_progress_at).total_seconds()
-                if stalled_for >= self.settings.index_refresh_stall_seconds and "refresh_delayed" not in reasons:
-                    reasons.append("refresh_delayed")
-
-        decorated.degradation_reasons = _dedupe_reasons(reasons)
-        decorated.degraded = decorated.degraded or bool(decorated.degradation_reasons)
-        return decorated
-
     def get_status(self) -> IndexStatus:
         with self._lock:
-            return self._decorate_status(self._status)
+            status = self._status.model_copy(deep=True)
+            if status.snapshot_loaded:
+                status.snapshot_age_seconds = self._snapshot_age_seconds()
+            if status.refresh_in_progress and status.last_progress_at is not None:
+                try:
+                    last_progress = datetime.fromisoformat(status.last_progress_at)
+                except ValueError:
+                    return status
+                stall_seconds = int((datetime.now(timezone.utc) - last_progress).total_seconds())
+                if stall_seconds >= self.settings.index_refresh_stall_seconds:
+                    status.degraded = True
+                    status.phase = "ready_degraded" if status.matching_available else status.phase
+                    status.message = "Using saved index while live refresh is delayed"
+                    status.degradation_reasons = _dedupe_reasons(
+                        [*status.degradation_reasons, "refresh_delayed"]
+                    )
+            return status
 
     def get_grants(self) -> list[GrantRecord]:
         with self._lock:

@@ -10,10 +10,17 @@ class Settings:
     host: str = "127.0.0.1"
     port: int = 8000
     openai_api_key: str | None = None
-    openai_match_model: str = "gpt-4o-2024-08-06"
-    openai_profile_expansion_model: str = "gpt-4o-2024-08-06"
+    openai_match_model: str = "gpt-5.4-mini-2026-03-17"
+    openai_profile_expansion_model: str = "gpt-5.4-mini-2026-03-17"
     openai_embedding_model: str = "text-embedding-3-large"
+    openai_timeout_seconds: float = 30.0
+    openai_max_retries: int = 2
+    openai_match_reasoning_effort: str = "low"
+    openai_profile_reasoning_effort: str = "none"
     sentry_dsn: str | None = None
+    sentry_environment: str = "development"
+    sentry_release: str | None = None
+    sentry_send_default_pii: bool = False
     ec_page_size: int = 100
     ec_max_pages_per_prefix: int | None = None
     shortlist_limit: int = 10
@@ -34,13 +41,20 @@ def load_settings() -> Settings:
         host=os.getenv("HOST", "127.0.0.1"),
         port=int(os.getenv("PORT", "8000")),
         openai_api_key=os.getenv("OPENAI_API_KEY"),
-        openai_match_model=os.getenv("OPENAI_MATCH_MODEL", "gpt-4o-2024-08-06"),
+        openai_match_model=os.getenv("OPENAI_MATCH_MODEL", "gpt-5.4-mini-2026-03-17"),
         openai_profile_expansion_model=os.getenv(
             "OPENAI_PROFILE_EXPANSION_MODEL",
-            "gpt-4o-2024-08-06",
+            "gpt-5.4-mini-2026-03-17",
         ),
         openai_embedding_model=os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-large"),
+        openai_timeout_seconds=float(os.getenv("OPENAI_TIMEOUT_SECONDS", "30")),
+        openai_max_retries=int(os.getenv("OPENAI_MAX_RETRIES", "2")),
+        openai_match_reasoning_effort=os.getenv("OPENAI_MATCH_REASONING_EFFORT", "low"),
+        openai_profile_reasoning_effort=os.getenv("OPENAI_PROFILE_REASONING_EFFORT", "none"),
         sentry_dsn=os.getenv("SENTRY_DSN"),
+        sentry_environment=os.getenv("SENTRY_ENVIRONMENT", "development"),
+        sentry_release=os.getenv("SENTRY_RELEASE"),
+        sentry_send_default_pii=os.getenv("SENTRY_SEND_DEFAULT_PII", "false").lower() == "true",
         ec_page_size=int(os.getenv("EC_PAGE_SIZE", "100")),
         ec_max_pages_per_prefix=int(raw_max_pages) if raw_max_pages else None,
         shortlist_limit=int(os.getenv("SHORTLIST_LIMIT", "10")),

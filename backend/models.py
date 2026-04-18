@@ -86,6 +86,7 @@ class MatchResult(BaseModel):
 
 
 class MatchResponse(BaseModel):
+    request_id: str | None = None
     indexed_grants: int
     refresh_indexed_grants: int = 0
     degraded: bool = False
