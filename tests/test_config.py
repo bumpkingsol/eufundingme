@@ -1,4 +1,4 @@
-from backend.config import load_settings
+from backend.config import DEFAULT_OPENAI_TEXT_MODEL, load_settings
 
 
 def test_load_settings_reads_agent_config_from_env(monkeypatch):
@@ -50,8 +50,8 @@ def test_load_settings_uses_hardened_defaults(monkeypatch):
 
     settings = load_settings()
 
-    assert settings.openai_match_model == "gpt-5.4-mini-2026-03-17"
-    assert settings.openai_profile_expansion_model == "gpt-5.4-mini-2026-03-17"
+    assert settings.openai_match_model == DEFAULT_OPENAI_TEXT_MODEL
+    assert settings.openai_profile_expansion_model == DEFAULT_OPENAI_TEXT_MODEL
     assert settings.openai_timeout_seconds == 30.0
     assert settings.openai_max_retries == 2
     assert settings.openai_match_reasoning_effort == "low"

@@ -58,6 +58,152 @@ def test_lexical_shortlist_ignores_stopwords_and_generic_business_terms():
     assert candidates == []
 
 
+def test_lexical_shortlist_drops_generic_sustainability_overlap_for_northvolt_style_profile():
+    grants = [
+        make_grant(
+            "TOPIC-1",
+            "Circular manufacturing initiative",
+            keywords=["sustainable", "design", "using", "chains"],
+        ),
+        make_grant(
+            "TOPIC-2",
+            "Battery storage for electric mobility",
+            keywords=["battery", "storage", "electric", "recycled"],
+        ),
+    ]
+
+    candidates = lexical_shortlist(
+        (
+            "We design and manufacture lithium-ion batteries for electric vehicles and energy storage systems. "
+            "Our focus is on sustainable battery production using renewable energy and recycled materials, "
+            "reducing battery supply chains."
+        ),
+        grants,
+        limit=5,
+    )
+
+    assert [candidate.grant.id for candidate in candidates] == ["TOPIC-2"]
+
+
+def test_lexical_shortlist_ignores_apostrophe_artifacts_and_generic_production_terms():
+    grants = [
+        make_grant(
+            "TOPIC-1",
+            "Europe's production systems for resilient food chains",
+            keywords=["production"],
+        ),
+        make_grant(
+            "TOPIC-2",
+            "Battery storage for electric mobility",
+            keywords=["battery", "storage", "electric", "recycled"],
+        ),
+    ]
+
+    candidates = lexical_shortlist(
+        (
+            "We're building Europe's largest battery gigafactory with renewable energy and recycled materials "
+            "for electric vehicles and storage systems."
+        ),
+        grants,
+        limit=5,
+    )
+
+    assert [candidate.grant.id for candidate in candidates] == ["TOPIC-2"]
+
+
+def test_lexical_shortlist_does_not_match_on_apostrophe_s_plus_production():
+    grants = [
+        make_grant(
+            "TOPIC-1",
+            "Europe's food production systems",
+            keywords=["production", "food"],
+        ),
+        make_grant(
+            "TOPIC-2",
+            "Battery storage for electric mobility",
+            keywords=["battery", "storage", "electric", "recycled"],
+        ),
+    ]
+
+    candidates = lexical_shortlist(
+        (
+            "We're building Europe's largest battery gigafactory with sustainable battery production, "
+            "renewable energy, and recycled materials for electric vehicles and storage systems."
+        ),
+        grants,
+        limit=5,
+    )
+
+    assert [candidate.grant.id for candidate in candidates] == ["TOPIC-2"]
+
+
+def test_lexical_shortlist_uses_high_signal_grant_fields_over_description_noise():
+    cancer_grant = GrantRecord(
+        id="TOPIC-1",
+        title="Cancer biomarker studies",
+        status="Open",
+        portal_url="https://example.com/TOPIC-1",
+        deadline="2026-08-01",
+        deadline_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        keywords=[],
+        framework_programme="Horizon Europe",
+        programme_division="Health",
+        description="Including first-in-human multimodal image studies for rare cancers.",
+        search_text="cancer biomarker studies including first in human multimodal image studies",
+    )
+    ai_grant = make_grant(
+        "TOPIC-2",
+        "Trustworthy AI safety collaboration",
+        keywords=["ai", "safe", "safety"],
+    )
+
+    candidates = lexical_shortlist(
+        (
+            "We develop and deploy advanced AI systems including large language models, image generation, "
+            "and reasoning engines with a focus on AI safety."
+        ),
+        [cancer_grant, ai_grant],
+        limit=5,
+    )
+
+    assert [candidate.grant.id for candidate in candidates] == ["TOPIC-2"]
+
+
+def test_lexical_shortlist_requires_multiple_high_signal_overlaps():
+    cancer_grant = GrantRecord(
+        id="TOPIC-1",
+        title="Cancer imaging studies",
+        status="Open",
+        portal_url="https://example.com/TOPIC-1",
+        deadline="2026-08-01",
+        deadline_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        keywords=["Biophotonics, Imaging, image and data processing"],
+        framework_programme="Horizon Europe",
+        programme_division="Health",
+        search_text="cancer imaging studies biophotonics imaging image and data processing",
+    )
+    ai_grant = GrantRecord(
+        id="TOPIC-2",
+        title="EU Frontier AI Safety Initiative",
+        status="Open",
+        portal_url="https://example.com/TOPIC-2",
+        deadline="2026-08-01",
+        deadline_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        keywords=["Artificial intelligence, intelligent systems, safe deployment"],
+        framework_programme="Horizon Europe",
+        programme_division="Cluster 4",
+        search_text="eu frontier ai safety initiative artificial intelligence intelligent systems safe deployment",
+    )
+
+    candidates = lexical_shortlist(
+        "We build advanced AI systems and AI safety tooling for enterprise deployment.",
+        [cancer_grant, ai_grant],
+        limit=5,
+    )
+
+    assert [candidate.grant.id for candidate in candidates] == ["TOPIC-2"]
+
+
 def test_match_service_clamps_ai_scores():
     grant = make_grant("TOPIC-1", "AI Safety Grant", keywords=["ai", "safety"])
 
@@ -89,7 +235,7 @@ def test_match_service_falls_back_when_scorer_fails():
 
     service = MatchService(
         shortlister=lambda company_description, grants, limit: [
-            MatchCandidate(grant=grant, shortlist_score=0.75)
+            MatchCandidate(grant=grant, shortlist_score=2.0)
         ],
         scorer=lambda company_description, candidates: (_ for _ in ()).throw(RuntimeError("boom")),
     )
@@ -101,7 +247,7 @@ def test_match_service_falls_back_when_scorer_fails():
     )
 
     assert response.results[0].grant_id == "TOPIC-1"
-    assert response.results[0].fit_score >= 70
+    assert response.results[0].fit_score == 56
     assert "ai" in response.results[0].why_match.lower()
 
 
@@ -111,7 +257,7 @@ def test_match_service_reports_scorer_failures():
 
     service = MatchService(
         shortlister=lambda company_description, grants, limit: [
-            MatchCandidate(grant=grant, shortlist_score=0.75)
+            MatchCandidate(grant=grant, shortlist_score=2.0)
         ],
         scorer=lambda company_description, candidates: (_ for _ in ()).throw(RuntimeError("boom")),
         on_scorer_failure=lambda exc, *, context: captured.append((str(exc), context)),
@@ -165,7 +311,7 @@ def test_openai_scorer_uses_responses_api_with_reasoning_effort():
     fake_responses = FakeResponses()
     fake_client = type("FakeClient", (), {"responses": fake_responses})()
     scorer = OpenAIScorer(
-        model="gpt-5.4-mini-2026-03-17",
+        model="gpt-5.4-mini",
         client=fake_client,
         reasoning_effort="low",
     )
@@ -174,7 +320,7 @@ def test_openai_scorer_uses_responses_api_with_reasoning_effort():
     parsed = scorer.score("We build AI safety tooling.", candidates)
 
     assert parsed[0].grant_id == "TOPIC-1"
-    assert fake_responses.calls[0]["model"] == "gpt-5.4-mini-2026-03-17"
+    assert fake_responses.calls[0]["model"] == "gpt-5.4-mini"
     assert fake_responses.calls[0]["reasoning"] == {"effort": "low"}
     instructions = fake_responses.calls[0]["instructions"]
     assert "specific grant requirements" in instructions

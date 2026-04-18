@@ -8,6 +8,7 @@ from pathlib import Path
 from openai import OpenAI
 from pydantic import BaseModel
 
+from .config import DEFAULT_OPENAI_TEXT_MODEL
 from .openai_client import build_reasoning
 
 DEMO_PROFILES_DEFAULT_NAME = "DEMO-PROFILES.md"
@@ -41,7 +42,7 @@ class OpenAICompanyProfileExpander:
         self,
         *,
         api_key: str,
-        model: str = "gpt-5.4-mini-2026-03-17",
+        model: str = DEFAULT_OPENAI_TEXT_MODEL,
         client: OpenAI | None = None,
         reasoning_effort: str | None = None,
     ) -> None:

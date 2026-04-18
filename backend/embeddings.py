@@ -35,34 +35,86 @@ STOPWORDS = {
     "across",
 }
 LOW_SIGNAL_TERMS = {
+    "000",
+    "areas",
+    "based",
+    "beneficial",
     "build",
     "building",
     "business",
     "businesses",
+    "capacity",
+    "chains",
     "company",
     "companies",
+    "data",
+    "developers",
+    "design",
+    "develop",
+    "developing",
+    "digital",
     "enterprise",
     "enterprises",
     "eu",
     "europe",
     "european",
+    "foundation",
+    "focus",
+    "generation",
+    "globally",
     "government",
     "governments",
+    "human",
+    "image",
+    "including",
+    "industrial",
     "industry",
     "industries",
+    "initiative",
+    "initiatives",
+    "key",
+    "language",
+    "large",
+    "learning",
+    "manufacture",
+    "manufacturing",
+    "making",
+    "medical",
+    "models",
     "organisation",
     "organisations",
     "organization",
     "organizations",
+    "patients",
+    "platform",
+    "product",
+    "products",
+    "production",
     "programme",
     "programmes",
     "program",
     "programs",
+    "research",
     "sector",
     "sectors",
+    "serve",
     "solution",
     "solutions",
+    "sustainable",
+    "support",
+    "system",
+    "systems",
+    "through",
+    "use",
+    "used",
+    "using",
+    "widely",
+    "feedback",
+    "advanced",
+    "access",
 }
+
+MIN_LEXICAL_OVERLAP = 2
 
 
 class EmbeddingService:
@@ -100,8 +152,21 @@ def informative_terms(text: str) -> set[str]:
     return {
         term
         for term in tokenize_terms(text)
-        if term not in STOPWORDS and term not in LOW_SIGNAL_TERMS
+        if len(term) > 1 and not term.isdigit() and term not in STOPWORDS and term not in LOW_SIGNAL_TERMS
     }
+
+
+def build_lexical_haystack(grant: GrantRecord) -> str:
+    return " ".join(
+        part
+        for part in [
+            grant.title,
+            grant.framework_programme,
+            grant.programme_division,
+            " ".join(grant.keywords),
+        ]
+        if part
+    )
 
 
 def lexical_shortlist(
@@ -116,9 +181,9 @@ def lexical_shortlist(
     scored: list[MatchCandidate] = []
 
     for grant in grants:
-        haystack_terms = informative_terms(grant.search_text or grant.title)
+        haystack_terms = informative_terms(build_lexical_haystack(grant))
         overlap = query_terms & haystack_terms
-        if not overlap:
+        if len(overlap) < MIN_LEXICAL_OVERLAP:
             continue
         shortlist_score = float(len(overlap))
         scored.append(MatchCandidate(grant=grant, shortlist_score=shortlist_score))

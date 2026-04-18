@@ -982,6 +982,53 @@ if (elements.get("dashboard-total-grants").textContent !== "44 grants found so f
     assert result.returncode == 0, result.stderr
 
 
+def test_frontend_surfaces_live_refresh_progress_before_it_surpasses_seed_snapshot():
+    script = build_frontend_harness(
+        """
+const status = {
+  phase: "ready_degraded",
+  message: "Using bundled seed snapshot while live refresh runs",
+  indexed_grants: 44,
+  refresh_indexed_grants: 10,
+  scanned_prefixes: 0,
+  total_prefixes: 46,
+  failed_prefixes: 0,
+  truncated_prefixes: 0,
+  embeddings_ready: false,
+  matching_available: true,
+  coverage_complete: false,
+  degraded: true,
+  degradation_reasons: ["bundled_seed_mode"],
+  snapshot_loaded: true,
+  snapshot_source: "bundled",
+  refresh_in_progress: true,
+  summary: {
+    total_grants: 44,
+    programme_count: 8,
+    total_budget_display: "EUR 380M",
+    closest_deadline_days: 3,
+  },
+};
+
+appContext.updateStatus(status);
+
+if (elements.get("status-count").textContent !== "44") {
+  throw new Error(`Unexpected visible indexed count: ${elements.get("status-count").textContent}`);
+}
+if (elements.get("dashboard-total-grants").textContent !== "44 grants indexed · 10 found in live refresh") {
+  throw new Error(`Unexpected dashboard grants copy: ${elements.get("dashboard-total-grants").textContent}`);
+}
+if (elements.get("status-refresh").textContent !== "refreshing in background · 10 found so far") {
+  throw new Error(`Unexpected refresh progress copy: ${elements.get("status-refresh").textContent}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_frontend_calls_out_lexical_only_mode_as_lower_confidence():
     script = build_frontend_harness(
         """

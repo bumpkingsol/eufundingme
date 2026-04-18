@@ -599,6 +599,47 @@ def test_application_brief_endpoint_returns_markdown_and_sections():
     assert payload["sections"]["key_requirements"] == ["Requirement 1"]
 
 
+def test_application_brief_endpoint_uses_fallback_generation_without_openai():
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/application-brief",
+        headers={"X-Request-ID": "journey-fallback"},
+        json={
+            "company_description": "We build AI tools for industrial companies across Europe and support trusted deployment.",
+            "match_result": {
+                "grant_id": "TOPIC-1",
+                "title": "AI Grant",
+                "status": "Open",
+                "portal_url": "https://example.com/TOPIC-1",
+                "fit_score": 56,
+                "why_match": "Matched on keywords: ai, safety.",
+                "application_angle": "Lead with deployment outcomes",
+                "keywords": ["ai", "safety"],
+            },
+            "grant_detail": {
+                "grant_id": "TOPIC-1",
+                "full_description": "",
+                "eligibility_criteria": ["EU legal entity"],
+                "submission_deadlines": [{"label": "Main deadline", "value": "2026-08-01"}],
+                "expected_outcomes": [],
+                "documents": [],
+                "partner_search_available": False,
+                "source": "match_result_fallback",
+                "fallback_used": True,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["request_id"] == "journey-fallback"
+    assert "AI Grant application brief" in payload["markdown"]
+    assert "Final week before 2026-08-01" in payload["markdown"]
+    assert "Research institution with EU delivery experience" in payload["sections"]["suggested_consortium_partners"]
+
+
 def test_application_brief_endpoint_reports_service_failure():
     class FailingBriefService:
         def generate(self, **_kwargs):

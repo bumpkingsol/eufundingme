@@ -82,18 +82,18 @@ def test_bind_request_context_sets_request_tags_context_and_user(monkeypatch):
     bind_request_context(
         operation="match",
         request_id="req-123",
-        model="gpt-5.4-mini-2026-03-17",
+        model="gpt-5.4-mini",
     )
 
     assert ("operation", "match") in captured_tags
     assert ("request_id", "req-123") in captured_tags
-    assert ("model", "gpt-5.4-mini-2026-03-17") in captured_tags
+    assert ("model", "gpt-5.4-mini") in captured_tags
     assert captured_contexts == [(
         "request_context",
         {
             "operation": "match",
             "request_id": "req-123",
-            "model": "gpt-5.4-mini-2026-03-17",
+            "model": "gpt-5.4-mini",
         },
     )]
     assert captured_users == [{"id": "req-123"}]

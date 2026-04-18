@@ -145,7 +145,7 @@ def test_openai_company_profile_expander_uses_responses_api():
     fake_client = type("FakeClient", (), {"responses": fake_responses})()
     expander = OpenAICompanyProfileExpander(
         api_key="test",
-        model="gpt-5.4-mini-2026-03-17",
+        model="gpt-5.4-mini",
         client=fake_client,
         reasoning_effort="none",
     )
@@ -154,5 +154,5 @@ def test_openai_company_profile_expander_uses_responses_api():
 
     assert display_name == "Acme Robotics"
     assert "industrial automation" in profile
-    assert fake_responses.calls[0]["model"] == "gpt-5.4-mini-2026-03-17"
+    assert fake_responses.calls[0]["model"] == "gpt-5.4-mini"
     assert fake_responses.calls[0]["reasoning"] == {"effort": "none"}

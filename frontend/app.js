@@ -142,6 +142,10 @@ function getEffectiveIndexedGrantCount(status, summary = null) {
   return Math.max(summaryCount, indexedCount, refreshCount);
 }
 
+function getRefreshProgressCount(status) {
+  return Number(status?.refresh_indexed_grants || 0);
+}
+
 function hydrateAgentHandoff() {
   agentHandoffInstructions.value = AGENT_HANDOFF_INSTRUCTIONS;
 }
@@ -332,7 +336,11 @@ function renderDashboardSummary(summary, status = null) {
     return;
   }
   const effectiveGrantCount = getEffectiveIndexedGrantCount(status, summary);
-  if (status?.refresh_in_progress && status?.snapshot_loaded && effectiveGrantCount > Number(summary?.total_grants || 0)) {
+  const summaryCount = Number(summary?.total_grants || 0);
+  const refreshCount = getRefreshProgressCount(status);
+  if (status?.refresh_in_progress && status?.snapshot_loaded && refreshCount > 0 && refreshCount < summaryCount) {
+    dashboardTotalGrants.textContent = `${summaryCount} grants indexed · ${refreshCount} found in live refresh`;
+  } else if (status?.refresh_in_progress && status?.snapshot_loaded && effectiveGrantCount > summaryCount) {
     dashboardTotalGrants.textContent = `${effectiveGrantCount} grants found so far`;
   } else {
     dashboardTotalGrants.textContent = effectiveGrantCount ? `${effectiveGrantCount} grants indexed` : "0 grants indexed";
@@ -632,6 +640,7 @@ function scheduleCompanyResolution() {
 function updateStatus(status) {
   latestStatus = status;
   const effectiveGrantCount = getEffectiveIndexedGrantCount(status, status.summary);
+  const refreshCount = getRefreshProgressCount(status);
   const totalPrefixes = status.total_prefixes || 0;
   const scannedPrefixes = status.scanned_prefixes || 0;
   const ratio = totalPrefixes ? Math.max(8, Math.round((scannedPrefixes / totalPrefixes) * 100)) : 8;
@@ -665,7 +674,9 @@ function updateStatus(status) {
     : "live crawl";
   statusRefresh.textContent = status.refresh_in_progress
     ? status.snapshot_loaded
-      ? "refreshing in background"
+      ? refreshCount > 0
+        ? `refreshing in background · ${refreshCount} found so far`
+        : "refreshing in background"
       : "building live index"
     : "idle";
   statusProgress.textContent =

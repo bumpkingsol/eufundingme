@@ -218,10 +218,8 @@ def build_fallback_results(
             for keyword in grant.keywords
             if informative_terms(keyword) & company_terms
         ]
-        normalized_shortlist_score = candidate.shortlist_score
-        if normalized_shortlist_score > 1:
-            normalized_shortlist_score = min(normalized_shortlist_score / 5, 1)
-        fallback_score = 70 + int(max(0.0, min(normalized_shortlist_score, 1.0)) * 20)
+        overlap_count = max(0, int(round(candidate.shortlist_score)))
+        fallback_score = 40 + min(overlap_count, 4) * 8
         why_match = (
             f"Matched on keywords: {', '.join(matched_keywords)}."
             if matched_keywords

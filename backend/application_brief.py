@@ -7,6 +7,7 @@ import sentry_sdk
 from openai import OpenAI
 from pydantic import BaseModel
 
+from .config import DEFAULT_OPENAI_TEXT_MODEL
 from .grant_detail import build_fallback_grant_detail
 from .models import (
     ApplicationBriefRequest,
@@ -29,7 +30,7 @@ class ApplicationBriefService:
         self,
         *,
         client: OpenAI | None = None,
-        model: str = "gpt-5.4-mini-2026-03-17",
+        model: str = DEFAULT_OPENAI_TEXT_MODEL,
         reasoning_effort: str | None = None,
     ) -> None:
         self.client = client
@@ -178,7 +179,8 @@ def _render_html_list(title: str, items: list[str]) -> str:
 
 def _build_timeline(detail) -> list[str]:
     if detail.submission_deadlines:
-        deadline = detail.submission_deadlines[0].value
+        first_deadline = detail.submission_deadlines[0]
+        deadline = first_deadline.get("value") if isinstance(first_deadline, dict) else first_deadline.value
         return [
             "Week 1: confirm scope and writing ownership",
             "Week 2: lock evidence pack and partner roles",

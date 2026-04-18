@@ -4,15 +4,18 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+DEFAULT_OPENAI_TEXT_MODEL = "gpt-5.4-mini"
+DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-large"
+
 
 @dataclass(slots=True)
 class Settings:
     host: str = "127.0.0.1"
     port: int = 8000
     openai_api_key: str | None = None
-    openai_match_model: str = "gpt-5.4-mini-2026-03-17"
-    openai_profile_expansion_model: str = "gpt-5.4-mini-2026-03-17"
-    openai_embedding_model: str = "text-embedding-3-large"
+    openai_match_model: str = DEFAULT_OPENAI_TEXT_MODEL
+    openai_profile_expansion_model: str = DEFAULT_OPENAI_TEXT_MODEL
+    openai_embedding_model: str = DEFAULT_OPENAI_EMBEDDING_MODEL
     openai_timeout_seconds: float = 30.0
     openai_max_retries: int = 2
     openai_match_reasoning_effort: str = "low"
@@ -43,12 +46,12 @@ def load_settings() -> Settings:
         host=os.getenv("HOST", "127.0.0.1"),
         port=int(os.getenv("PORT", "8000")),
         openai_api_key=os.getenv("OPENAI_API_KEY"),
-        openai_match_model=os.getenv("OPENAI_MATCH_MODEL", "gpt-5.4-mini-2026-03-17"),
+        openai_match_model=os.getenv("OPENAI_MATCH_MODEL", DEFAULT_OPENAI_TEXT_MODEL),
         openai_profile_expansion_model=os.getenv(
             "OPENAI_PROFILE_EXPANSION_MODEL",
-            "gpt-5.4-mini-2026-03-17",
+            DEFAULT_OPENAI_TEXT_MODEL,
         ),
-        openai_embedding_model=os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-large"),
+        openai_embedding_model=os.getenv("OPENAI_EMBEDDING_MODEL", DEFAULT_OPENAI_EMBEDDING_MODEL),
         openai_timeout_seconds=float(os.getenv("OPENAI_TIMEOUT_SECONDS", "30")),
         openai_max_retries=int(os.getenv("OPENAI_MAX_RETRIES", "2")),
         openai_match_reasoning_effort=os.getenv("OPENAI_MATCH_REASONING_EFFORT", "low"),
