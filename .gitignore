@@ -3,3 +3,7 @@
 .venv/
 __pycache__/
 .pytest_cache/
+docs/superpowers/plans/
+production-gap-audit-2026-04-18-agentic-cli-postcheck.md
+production-gap-audit-2026-04-18.md
+DEMO-PROFILES.md
