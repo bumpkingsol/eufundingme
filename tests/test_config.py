@@ -95,10 +95,10 @@ def test_load_settings_prefers_ci_commit_sha_over_git_fallback(monkeypatch):
 
 
 def test_load_settings_reads_values_from_dotenv_files(monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("SENTRY_DSN", raising=False)
     monkeypatch.delenv("SENTRY_ENVIRONMENT", raising=False)
     monkeypatch.delenv("OPENAI_MATCH_MODEL", raising=False)
+    monkeypatch.setattr("backend.config.CONFIG_ROOT", tmp_path)
 
     (tmp_path / ".env").write_text(
         "\n".join(
@@ -118,9 +118,9 @@ def test_load_settings_reads_values_from_dotenv_files(monkeypatch, tmp_path):
 
 
 def test_load_settings_prefers_process_env_and_dotenv_local(monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("SENTRY_ENVIRONMENT", "process-env")
     monkeypatch.delenv("SENTRY_DSN", raising=False)
+    monkeypatch.setattr("backend.config.CONFIG_ROOT", tmp_path)
 
     (tmp_path / ".env").write_text("SENTRY_DSN=https://env@sentry.invalid/1\nSENTRY_ENVIRONMENT=dotenv-env\n")
     (tmp_path / ".env.local").write_text(
@@ -131,3 +131,19 @@ def test_load_settings_prefers_process_env_and_dotenv_local(monkeypatch, tmp_pat
 
     assert settings.sentry_dsn == "https://local@sentry.invalid/1"
     assert settings.sentry_environment == "process-env"
+
+
+def test_load_settings_reads_repo_root_dotenv_even_when_cwd_differs(monkeypatch, tmp_path):
+    repo_root = tmp_path / "repo"
+    other_dir = tmp_path / "elsewhere"
+    repo_root.mkdir()
+    other_dir.mkdir()
+    monkeypatch.setattr("backend.config.CONFIG_ROOT", repo_root)
+    monkeypatch.chdir(other_dir)
+    monkeypatch.delenv("SENTRY_DSN", raising=False)
+
+    (repo_root / ".env.local").write_text("SENTRY_DSN=https://repo-root@sentry.invalid/1\n")
+
+    settings = load_settings()
+
+    assert settings.sentry_dsn == "https://repo-root@sentry.invalid/1"

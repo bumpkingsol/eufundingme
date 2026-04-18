@@ -260,6 +260,12 @@ class AppState:
 
             finished_at = datetime.now(timezone.utc)
             degradation_reasons = _dedupe_reasons(degradation_reasons)
+            with self._lock:
+                snapshot_loaded = self._snapshot_loaded
+                snapshot_source = self._snapshot_source
+                snapshot_count = len(self._grants)
+                snapshot_reasons = list(self._status.degradation_reasons)
+                snapshot_embeddings_ready = self._status.embeddings_ready
             if self._snapshot_loaded and self._grants and not grants and build_details.failed_prefixes > 0:
                 with self._lock:
                     snapshot_reason = "bundled_seed_mode" if self._snapshot_source == "bundled" else "stale_snapshot_mode"
@@ -280,6 +286,40 @@ class AppState:
                             "finished_at": finished_at.isoformat(),
                             "snapshot_source": self._snapshot_source,
                             "refresh_in_progress": False,
+                        }
+                    )
+                return
+            if snapshot_loaded and snapshot_count and len(grants) < snapshot_count:
+                snapshot_reason = "bundled_seed_mode" if snapshot_source == "bundled" else "stale_snapshot_mode"
+                reasons = _dedupe_reasons(
+                    [
+                        *snapshot_reasons,
+                        *degradation_reasons,
+                        snapshot_reason,
+                        "live_refresh_smaller_than_snapshot",
+                    ]
+                )
+                with self._lock:
+                    self._status = self._status.model_copy(
+                        update={
+                            "phase": "ready_degraded",
+                            "message": "Retaining bundled seed snapshot because live refresh returned a smaller corpus"
+                            if snapshot_source == "bundled"
+                            else "Retaining saved index because live refresh returned a smaller corpus",
+                            "indexed_grants": snapshot_count,
+                            "failed_prefixes": build_details.failed_prefixes,
+                            "truncated_prefixes": build_details.truncated_prefixes,
+                            "embeddings_ready": snapshot_embeddings_ready,
+                            "degraded": True,
+                            "coverage_complete": False,
+                            "matching_available": True,
+                            "degradation_reasons": reasons,
+                            "finished_at": finished_at.isoformat(),
+                            "snapshot_loaded": True,
+                            "snapshot_source": snapshot_source,
+                            "snapshot_age_seconds": self._snapshot_age_seconds(reference_time=finished_at),
+                            "refresh_in_progress": False,
+                            "refresh_indexed_grants": len(grants),
                         }
                     )
                 return

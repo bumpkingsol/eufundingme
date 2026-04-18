@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from backend.config import Settings
-from backend.models import GrantRecord
+from backend.models import GrantRecord, IndexBuildDetails
 from backend.snapshot_store import IndexSnapshotStore
 from backend.state import AppState
 
@@ -256,6 +256,56 @@ def test_app_state_prefers_runtime_snapshot_when_it_is_at_least_as_large_as_bund
     assert status.snapshot_loaded is True
     assert status.snapshot_source == "runtime"
     assert [grant.id for grant in state.get_grants()] == ["TOPIC-RUNTIME-1", "TOPIC-RUNTIME-2"]
+
+
+def test_app_state_retains_snapshot_when_live_refresh_is_smaller(monkeypatch, tmp_path):
+    snapshot_path = tmp_path / "grant-index.json"
+    seed_path = tmp_path / "grant-index.seed.json"
+    settings = make_settings(snapshot_path)
+
+    IndexSnapshotStore(seed_path).save(
+        grants=[make_grant("TOPIC-SEED-1"), make_grant("TOPIC-SEED-2")],
+        embeddings={},
+        status_payload={
+            "phase": "ready",
+            "message": "Bundled seed ready",
+            "indexed_grants": 2,
+            "scanned_prefixes": 1,
+            "total_prefixes": 1,
+            "failed_prefixes": 0,
+            "truncated_prefixes": 0,
+            "embeddings_ready": False,
+            "degraded": False,
+            "coverage_complete": True,
+            "matching_available": True,
+            "degradation_reasons": [],
+        },
+        written_at=datetime.now(timezone.utc) - timedelta(minutes=10),
+    )
+
+    def fake_build_grant_index(**_kwargs):
+        return [make_grant("TOPIC-LIVE")], IndexBuildDetails(
+            failed_prefixes=0,
+            truncated_prefixes=0,
+            degradation_reasons=[],
+        )
+
+    monkeypatch.setattr("backend.state.build_grant_index", fake_build_grant_index)
+
+    state = AppState(settings=settings, prefixes=["AI-2026"])
+    state.ensure_indexing_started()
+    assert state._thread is not None
+    state._thread.join(timeout=5)
+
+    status = state.get_status()
+    assert status.snapshot_loaded is True
+    assert status.snapshot_source == "bundled"
+    assert status.indexed_grants == 2
+    assert status.refresh_indexed_grants == 1
+    assert status.phase == "ready_degraded"
+    assert "live_refresh_smaller_than_snapshot" in status.degradation_reasons
+    assert [grant.id for grant in state.get_grants()] == ["TOPIC-SEED-1", "TOPIC-SEED-2"]
+    assert not snapshot_path.exists()
 
 
 def test_app_state_preserves_snapshot_during_refresh_failure(tmp_path):
