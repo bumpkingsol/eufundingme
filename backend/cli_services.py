@@ -7,6 +7,7 @@ from typing import Any
 from .app import create_app
 from .app import build_match_unavailable_error, is_match_ready
 from .models import IndexStatus
+from .request_ids import resolve_request_id
 
 
 CLI_EXIT_SUCCESS = 0
@@ -15,7 +16,13 @@ CLI_EXIT_TIMEOUT = 3
 CLI_EXIT_RUNTIME = 1
 
 
-def _build_match_error_payload(code: str, message: str, status: IndexStatus | None = None) -> dict[str, Any]:
+def _build_match_error_payload(
+    code: str,
+    message: str,
+    status: IndexStatus | None = None,
+    *,
+    request_id: str | None = None,
+) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "ok": False,
         "error": {
@@ -25,19 +32,36 @@ def _build_match_error_payload(code: str, message: str, status: IndexStatus | No
     }
     if status is not None:
         payload["error"]["status"] = status.model_dump()
+    if request_id is not None:
+        payload["request_id"] = request_id
     return payload
 
 
-def _build_match_unavailable_payload(status: IndexStatus) -> dict[str, Any]:
-    base = build_match_unavailable_error(status)
-    return _build_match_error_payload(base["code"], base["message"], status)
+def _build_match_unavailable_payload(
+    status: IndexStatus,
+    *,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    base = build_match_unavailable_error(status, request_id=request_id)
+    return _build_match_error_payload(
+        base["code"],
+        base["message"],
+        status,
+        request_id=request_id,
+    )
 
 
-def _build_match_timeout_payload(status: IndexStatus, timeout_seconds: float) -> dict[str, Any]:
+def _build_match_timeout_payload(
+    status: IndexStatus,
+    timeout_seconds: float,
+    *,
+    request_id: str | None = None,
+) -> dict[str, Any]:
     return _build_match_error_payload(
         "MATCH_TIMEOUT",
         f"Timed out after {timeout_seconds:.1f} seconds waiting for a ready index.",
         status,
+        request_id=request_id,
     )
 
 
@@ -77,8 +101,10 @@ def run_match_query(
     *,
     wait_timeout_seconds: float | None = None,
     poll_interval_seconds: float = 0.5,
+    request_id: str | None = None,
 ) -> tuple[int, dict]:
     try:
+        request_id = resolve_request_id(request_id)
         app = create_app()
         app.state.app_state.ensure_indexing_started()
         status = app.state.app_state.get_status()
@@ -89,7 +115,7 @@ def run_match_query(
         if not is_match_ready(status):
             # If the service reports ready but degraded, do not silently fall back to partial results.
             if status.phase == "ready":
-                payload = _build_match_unavailable_payload(status)
+                payload = _build_match_unavailable_payload(status, request_id=request_id)
                 return CLI_EXIT_VALIDATION, payload
 
             status, ready, timed_out = _wait_for_match_readiness(
@@ -99,8 +125,15 @@ def run_match_query(
             )
             if not ready:
                 if timed_out:
-                    return CLI_EXIT_TIMEOUT, _build_match_timeout_payload(status, wait_timeout_seconds)
-                return CLI_EXIT_VALIDATION, _build_match_unavailable_payload(status)
+                    return CLI_EXIT_TIMEOUT, _build_match_timeout_payload(
+                        status,
+                        wait_timeout_seconds,
+                        request_id=request_id,
+                    )
+                return CLI_EXIT_VALIDATION, _build_match_unavailable_payload(
+                    status,
+                    request_id=request_id,
+                )
 
             status = app.state.app_state.get_status()
 
@@ -121,12 +154,17 @@ def run_match_query(
 
         return CLI_EXIT_SUCCESS, {
             "ok": True,
+            "request_id": request_id,
             "indexed_grants": indexed_grants,
             "results": results,
             "status": status.model_dump(),
         }
     except Exception as exc:
-        return CLI_EXIT_RUNTIME, _build_match_error_payload("INTERNAL_ERROR", str(exc))
+        return CLI_EXIT_RUNTIME, _build_match_error_payload(
+            "INTERNAL_ERROR",
+            str(exc),
+            request_id=request_id,
+        )
 
 
 def run_index_query() -> dict:

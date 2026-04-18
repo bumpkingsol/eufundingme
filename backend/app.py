@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse
 import sentry_sdk
 
@@ -14,6 +14,7 @@ from .matcher import MatchService, OpenAIScorer
 from .models import HealthResponse, IndexStatus, MatchRequest, MatchResponse, ProfileResolveRequest, ProfileResolveResponse
 from .profile_resolver import DemoProfileResolver, OpenAICompanyProfileExpander
 from .state import AppState
+from .request_ids import resolve_request_id
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 _SENTRY_INITIALIZED = False
@@ -24,13 +25,16 @@ def is_match_ready(status: IndexStatus) -> bool:
     return status.phase == "ready" and status.matching_available
 
 
-def build_match_unavailable_error(status: IndexStatus) -> dict:
+def build_match_unavailable_error(status: IndexStatus, request_id: str | None = None) -> dict:
     message = status.message or "Index is not ready for matching."
-    return {
+    payload = {
         "code": MATCH_NOT_READY_ERROR_CODE,
         "message": message,
         "status": status.model_dump(),
     }
+    if request_id is not None:
+        payload["request_id"] = request_id
+    return payload
 
 
 def initialize_sentry(settings: Settings) -> None:
@@ -155,11 +159,18 @@ def create_app(
         )
 
     @app.post("/api/match", response_model=MatchResponse)
-    def match_company(payload: MatchRequest) -> MatchResponse:
+    def match_company(
+        payload: MatchRequest,
+        x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
+    ) -> MatchResponse:
         app.state.app_state.ensure_indexing_started()
+        request_id = resolve_request_id(x_request_id)
         status = app.state.app_state.get_status()
         if not is_match_ready(status):
-            raise HTTPException(status_code=503, detail=build_match_unavailable_error(status))
+            raise HTTPException(
+                status_code=503,
+                detail=build_match_unavailable_error(status, request_id=request_id),
+            )
 
         grants = app.state.app_state.get_grants()
         return app.state.match_service.match(

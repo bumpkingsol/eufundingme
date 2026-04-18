@@ -62,6 +62,10 @@ def build_match_parser() -> argparse.ArgumentParser:
         default=0.5,
         help="Seconds to wait between readiness checks.",
     )
+    parser.add_argument(
+        "--request-id",
+        help="Optional request/correlation id to include in machine output.",
+    )
     _add_output_flags(parser)
     return parser
 
@@ -122,6 +126,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.5,
         help="Seconds to wait between readiness checks.",
     )
+    match_parser.add_argument(
+        "--request-id",
+        help="Optional request/correlation id to include in machine output.",
+    )
     _add_output_flags(match_parser)
 
     index_parser = subparsers.add_parser("index", help="Start or inspect indexing state")
@@ -148,6 +156,7 @@ def run_match(argv: list[str]) -> tuple[int, str, str]:
         args.description,
         wait_timeout_seconds=args.wait_timeout_seconds,
         poll_interval_seconds=args.poll_interval_seconds,
+        request_id=args.request_id,
     )
     payload = payload | {"ok": exit_code == CLI_EXIT_SUCCESS}
     return exit_code, *_render_payload(payload, json_enabled=use_json)
@@ -197,6 +206,7 @@ def main(argv: list[str] | None = None) -> int:
             *(["--json"] if args.json else []),
             *(["--wait-timeout-seconds", str(args.wait_timeout_seconds)] if args.wait_timeout_seconds is not None else []),
             *(["--poll-interval-seconds", str(args.poll_interval_seconds)] if args.poll_interval_seconds is not None else []),
+            *(["--request-id", args.request_id] if args.request_id else []),
         ])
         if stdout:
             print(stdout)

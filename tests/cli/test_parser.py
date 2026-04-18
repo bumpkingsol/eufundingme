@@ -7,6 +7,7 @@ def test_cli_parser_has_required_subcommands():
     assert parsed.command == "match"
     assert parsed.wait_timeout_seconds is None
     assert parsed.poll_interval_seconds == 0.5
+    assert parsed.request_id is None
     assert parsed.json is False
     assert parsed.text is False
 

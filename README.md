@@ -65,6 +65,13 @@ python -m pytest tests -q
 
 Use the CLI in machine-first mode for agents (JSON output and stable errors are default):
 
+Install once for agent automation:
+
+```bash
+pip install -e .
+# or pip install .
+```
+
 ```bash
 # Installable command (preferred for agents)
 eufundingme match --description "We build AI safety tooling for enterprise deployment across Europe."
@@ -99,8 +106,14 @@ JSON envelope (error example):
     "message": "Index is not ready for matching.",
     "status": { "...": "..." }
   },
-  "request_id": "optional"
+  "request_id": "..."
 }
+```
+
+You can pin trace IDs with `--request-id`:
+
+```bash
+eufundingme match --description "..." --request-id "agent-run-123"
 ```
 
 ## API
@@ -116,6 +129,7 @@ Example match request:
 ```bash
 curl http://127.0.0.1:8000/api/match \
   -H "Content-Type: application/json" \
+  -H "X-Request-ID: optional-trace-id" \
   -d '{"company_description":"We build AI safety tooling for enterprise deployment across Europe."}'
 ```
 

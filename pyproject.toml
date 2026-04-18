@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eufundingme"
+version = "0.1.0"
+description = "EU Grant Matcher API and CLI"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "openai>=1.75,<2",
+  "pydantic>=2.10,<3",
+  "requests>=2.32,<3",
+  "sentry-sdk[fastapi]>=2.27,<3",
+  "uvicorn>=0.34,<1",
+]
+
+[project.scripts]
+eufundingme = "backend.cli:main"
+
+[tool.setuptools]
+packages = ["backend"]
