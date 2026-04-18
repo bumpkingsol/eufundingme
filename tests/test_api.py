@@ -707,8 +707,23 @@ def test_match_endpoint_records_truthful_embedding_measurements(monkeypatch):
     assert ("grant_embeddings_available", 1.0) in measurements
 
 
-def test_sentry_debug_route_exists():
-    client = TestClient(create_app(), raise_server_exceptions=False)
+def test_sentry_debug_route_is_hidden_by_default():
+    client = TestClient(create_app())
+
+    response = client.get("/sentry-debug")
+
+    assert response.status_code == 404
+
+
+def test_sentry_debug_route_can_be_enabled():
+    client = TestClient(
+        create_app(
+            settings=Settings(
+                sentry_debug_endpoint_enabled=True,
+            )
+        ),
+        raise_server_exceptions=False,
+    )
 
     response = client.get("/sentry-debug")
 

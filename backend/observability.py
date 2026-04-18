@@ -49,6 +49,8 @@ def initialize_sentry(settings: Settings) -> None:
     global _SENTRY_INITIALIZED
     if _SENTRY_INITIALIZED or not settings.sentry_dsn:
         return
+    if not settings.sentry_enable_in_tests and "PYTEST_CURRENT_TEST" in __import__("os").environ:
+        return
 
     sentry_sdk.init(
         dsn=settings.sentry_dsn,
