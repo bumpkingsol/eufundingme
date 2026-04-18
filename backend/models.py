@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from pydantic import BaseModel, Field
@@ -87,6 +87,8 @@ class MatchResult(BaseModel):
 
 class MatchResponse(BaseModel):
     indexed_grants: int
+    degraded: bool = False
+    degradation_reasons: list[str] = Field(default_factory=list)
     results: list[MatchResult]
 
 
@@ -97,18 +99,29 @@ class IndexStatus(BaseModel):
     scanned_prefixes: int = 0
     total_prefixes: int = 0
     failed_prefixes: int = 0
+    truncated_prefixes: int = 0
     embeddings_ready: bool = False
     degraded: bool = False
-    degradation_reasons: list[str] = Field(default_factory=list)
-    matching_available: bool = False
     coverage_complete: bool = False
-    truncated_prefixes: int = 0
+    matching_available: bool = False
+    degradation_reasons: list[str] = Field(default_factory=list)
     started_at: str | None = None
     finished_at: str | None = None
 
 
 class HealthResponse(BaseModel):
     status: str
+    readiness_phase: str
+    matching_available: bool
+    degraded: bool
+
+
+class ReadinessResponse(BaseModel):
+    status: str
+    phase: str
+    message: str
+    degraded: bool
+    degradation_reasons: list[str] = Field(default_factory=list)
 
 
 class ParsedLLMMatch(BaseModel):
@@ -120,3 +133,10 @@ class ParsedLLMMatch(BaseModel):
 
 class ParsedLLMMatchList(BaseModel):
     matches: list[ParsedLLMMatch]
+
+
+@dataclass(slots=True)
+class IndexBuildDetails:
+    failed_prefixes: int = 0
+    truncated_prefixes: int = 0
+    degradation_reasons: list[str] = field(default_factory=list)

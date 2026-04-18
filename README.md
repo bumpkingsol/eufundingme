@@ -32,8 +32,10 @@ Optional overrides:
 export HOST=127.0.0.1
 export PORT=8000
 export EC_PAGE_SIZE=100
-export EC_MAX_PAGES_PER_PREFIX=1
+export EC_MAX_PAGES_PER_PREFIX=3
 export EC_TIMEOUT_SECONDS=30
+export EC_MAX_RETRIES=2
+export EC_RETRY_BACKOFF_SECONDS=0.5
 export SHORTLIST_LIMIT=10
 export SENTRY_TRACES_SAMPLE_RATE=0.2
 export DEMO_PROFILES_PATH=...
@@ -42,7 +44,6 @@ export DEMO_PROFILES_PATH=...
 ## Run
 
 ```bash
-cd eufundingme
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -r requirements.txt pytest
@@ -53,10 +54,9 @@ Open [http://127.0.0.1:8000](http://127.0.0.1:8000).
 
 ## Test
 
-Use `python -m pytest` from the `eufundingme/` directory.
+Use `python -m pytest` from the project root.
 
 ```bash
-cd eufundingme
 . .venv/bin/activate
 python -m pytest tests -q
 ```
@@ -119,9 +119,10 @@ eufundingme match --description "..." --request-id "agent-run-123"
 ## API
 
 - `GET /api/health`
+- `GET /api/ready`
 - `GET /api/index/status`
-- `POST /api/match`
 - `POST /api/profile/resolve`
+- `POST /api/match`
 - `GET /sentry-debug`
 
 Example match request:
@@ -137,4 +138,17 @@ curl http://127.0.0.1:8000/api/match \
 
 - The EC API ignores server-side status filters, so indexing uses call-prefix fan-out and client-side filtering.
 - The app keeps the grant index in memory for speed.
-- If embeddings or AI scoring fail, the app falls back to lexical ranking instead of returning a blank screen.
+- By default the crawler runs exhaustively across pages for each prefix. Set `EC_MAX_PAGES_PER_PREFIX` only if you want an explicit crawl cap; capped crawls are reported as degraded coverage.
+- Known demo companies such as `OpenAI`, `Northvolt`, and `Doctolib` resolve from checked-in profiles and are also available as one-click presets in the UI.
+- Unknown short company names use OpenAI expansion only when `OPENAI_API_KEY` is configured. Without it, the UI asks for one or two descriptive sentences instead of sending the short name into `/api/match`.
+- If `OPENAI_API_KEY` is not set, the app stays available in lexical-only mode and reports degraded matching quality.
+- If embeddings or AI scoring fail at runtime, the app falls back to lexical ranking and marks the match/index state as degraded.
+- If `SENTRY_DSN` is not set, the app still runs but no Sentry monitoring is emitted.
+
+## Demo Flow
+
+1. Start the app and wait until `/api/index/status` reports `ready` or `ready_degraded`.
+2. Click the `OpenAI` preset to run the scripted first search.
+3. Click `Northvolt` or `Doctolib` to show a contrasting sector.
+4. For a live audience test, type a company name directly.
+5. If the name is known, the app expands it from the saved demo profiles. If the name is unknown and OpenAI is configured, the app expands it with AI before matching.

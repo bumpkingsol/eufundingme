@@ -1,6 +1,9 @@
 const form = document.querySelector("#match-form");
 const descriptionInput = document.querySelector("#company-description");
 const matchButton = document.querySelector("#match-button");
+const submitHint = document.querySelector("#submit-hint");
+const demoPresets = document.querySelector("#demo-presets");
+const presetButtons = document.querySelector("#preset-buttons");
 const statusCopy = document.querySelector("#status-copy");
 const statusBar = document.querySelector("#status-bar");
 const statusPhase = document.querySelector("#status-phase");
@@ -14,14 +17,18 @@ const resolutionBanner = document.querySelector("#resolution-banner");
 const resultsEmpty = document.querySelector("#results-empty");
 const resultsList = document.querySelector("#results-list");
 const resultsMeta = document.querySelector("#results-meta");
+const demoPresetProfiles = Array.isArray(window.__DEMO_PRESETS__) ? window.__DEMO_PRESETS__ : [];
 
 let latestStatus = null;
 let statusPollHandle = null;
 let statusPollInFlight = false;
 let consecutiveStatusFailures = 0;
+let activePresetName = null;
 const DEFAULT_EMPTY_STATE =
   "The top matches will appear here with fit scores, rationale, and the angle to take in the application.";
 const MIN_DESCRIPTION_LENGTH = 20;
+const DEFAULT_SUBMIT_HINT =
+  "The first run builds a live grant index, then matching becomes instant.";
 
 function escapeHtml(value) {
   return String(value)
@@ -136,6 +143,56 @@ function isMatchingAvailable(status) {
   return status?.phase === "ready" || status?.phase === "ready_degraded";
 }
 
+function syncPresetSelection() {
+  const buttons = presetButtons.querySelectorAll("[data-preset-name]");
+  for (const button of buttons) {
+    button.classList.toggle("is-active", button.dataset.presetName === activePresetName);
+  }
+}
+
+function applyDemoPreset(preset) {
+  descriptionInput.value = preset.profile;
+  activePresetName = preset.name;
+  syncPresetSelection();
+  showResolutionBanner(`Loaded saved ${preset.name} demo profile.`);
+  resultsEmpty.hidden = false;
+  resultsEmpty.textContent = DEFAULT_EMPTY_STATE;
+  resultsList.innerHTML = "";
+  resultsMeta.textContent = `Ready to match ${preset.name}.`;
+  descriptionInput.focus();
+}
+
+function renderDemoPresets() {
+  if (!demoPresetProfiles.length) {
+    demoPresets.hidden = true;
+    return;
+  }
+
+  presetButtons.innerHTML = demoPresetProfiles
+    .map(
+      (preset) => `
+        <button
+          type="button"
+          class="preset-button"
+          data-preset-name="${escapeHtml(preset.name)}"
+        >
+          ${escapeHtml(preset.name)}
+        </button>
+      `,
+    )
+    .join("");
+
+  for (const button of presetButtons.querySelectorAll("[data-preset-name]")) {
+    button.addEventListener("click", () => {
+      const preset = demoPresetProfiles.find((item) => item.name === button.dataset.presetName);
+      if (preset) {
+        applyDemoPreset(preset);
+      }
+    });
+  }
+
+  syncPresetSelection();
+}
 function updateStatus(status) {
   latestStatus = status;
   const totalPrefixes = status.total_prefixes || 0;
@@ -160,6 +217,9 @@ function updateStatus(status) {
   statusEmbeddings.textContent = status.embeddings_ready ? "ready" : "warming up";
   statusBar.style.width = `${status.phase === "ready" ? 100 : ratio}%`;
   matchButton.disabled = !isMatchingAvailable(status);
+  submitHint.textContent = isMatchingAvailable(status)
+    ? DEFAULT_SUBMIT_HINT
+    : status.message || "Matching becomes available when the live grant index is ready.";
 
   if (status.degraded && status.degradation_reasons?.length) {
     statusDegraded.hidden = false;
@@ -256,6 +316,7 @@ async function submitMatch(event) {
 
   try {
     if (looksLikeCompanyNameInput(companyDescription)) {
+      hideResolutionBanner();
       const resolution = await resolveCompanyProfile(companyDescription);
       if (!resolution.resolved || !resolution.profile) {
         throw new Error(
@@ -265,6 +326,8 @@ async function submitMatch(event) {
 
       companyDescription = resolution.profile;
       descriptionInput.value = companyDescription;
+      activePresetName = null;
+      syncPresetSelection();
       if (resolution.source === "demo_profile") {
         showResolutionBanner(`Using saved ${resolution.display_name} demo profile.`);
       } else {
@@ -304,5 +367,14 @@ async function submitMatch(event) {
   }
 }
 
+descriptionInput.addEventListener("input", () => {
+  hideResolutionBanner();
+  if (activePresetName !== null) {
+    activePresetName = null;
+    syncPresetSelection();
+  }
+});
+
 form.addEventListener("submit", submitMatch);
+renderDemoPresets();
 fetchStatus();

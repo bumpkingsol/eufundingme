@@ -10,7 +10,46 @@ def test_health_endpoint_returns_ok():
     response = client.get("/api/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {
+        "status": "ok",
+        "readiness_phase": "idle",
+        "matching_available": False,
+        "degraded": False,
+    }
+
+
+def test_health_endpoint_reports_readiness_state():
+    class FakeState:
+        def ensure_indexing_started(self) -> None:
+            return None
+
+        def get_status(self) -> IndexStatus:
+            return IndexStatus(
+                phase="ready_degraded",
+                message="Index ready with degraded coverage",
+                indexed_grants=32,
+                scanned_prefixes=10,
+                total_prefixes=10,
+                failed_prefixes=1,
+                truncated_prefixes=0,
+                embeddings_ready=False,
+                degraded=True,
+                coverage_complete=False,
+                matching_available=True,
+                degradation_reasons=["prefix_fetch_failed", "lexical_only_mode"],
+            )
+
+    client = TestClient(create_app(app_state=FakeState()))
+
+    response = client.get("/api/health")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok",
+        "readiness_phase": "ready_degraded",
+        "matching_available": True,
+        "degraded": True,
+    }
 
 
 def test_root_route_serves_frontend_shell():
@@ -20,8 +59,24 @@ def test_root_route_serves_frontend_shell():
 
     assert response.status_code == 200
     assert "Find EU funding for your company in 30 seconds." in response.text
+    assert 'rel="icon"' in response.text
     assert 'id="resolution-banner"' in response.text
+    assert 'id="demo-presets"' in response.text
+    assert "Use a saved demo profile" in response.text
+    assert "OpenAI" in response.text
+    assert "Northvolt" in response.text
     assert "novalidate" in response.text
+    assert "status-failures" in response.text
+    assert "status-coverage" in response.text
+
+
+def test_favicon_route_exists():
+    client = TestClient(create_app())
+
+    response = client.get("/favicon.ico")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/svg+xml"
 
 
 def test_index_status_endpoint_starts_indexing_and_returns_status():
@@ -40,7 +95,12 @@ def test_index_status_endpoint_starts_indexing_and_returns_status():
                 scanned_prefixes=4,
                 total_prefixes=10,
                 failed_prefixes=0,
+                truncated_prefixes=0,
                 embeddings_ready=False,
+                degraded=False,
+                coverage_complete=False,
+                matching_available=False,
+                degradation_reasons=[],
             )
 
         def get_grants(self) -> list[object]:
@@ -63,26 +123,39 @@ def test_match_endpoint_returns_ranked_results():
 
         def get_status(self) -> IndexStatus:
             return IndexStatus(
-                phase="ready",
+                phase="ready_degraded",
                 message="Ready",
                 indexed_grants=32,
                 scanned_prefixes=10,
                 total_prefixes=10,
                 failed_prefixes=0,
                 embeddings_ready=True,
-                matching_available=True,
+                truncated_prefixes=0,
+                degraded=True,
                 coverage_complete=True,
+                matching_available=True,
+                degradation_reasons=["openai_scoring_failed"],
             )
 
         def get_grants(self) -> list[object]:
             return ["placeholder"]
 
     class FakeMatchService:
-        def match(self, company_description: str, grants: list[object], now=None, limit: int = 10) -> MatchResponse:
+        def match(
+            self,
+            company_description: str,
+            grants: list[object],
+            now=None,
+            limit: int = 10,
+            base_degradation_reasons=None,
+        ) -> MatchResponse:
             assert company_description == "We build AI safety tooling across Europe."
             assert grants == ["placeholder"]
+            assert base_degradation_reasons == ["openai_scoring_failed"]
             return MatchResponse(
                 indexed_grants=32,
+                degraded=True,
+                degradation_reasons=["openai_scoring_failed"],
                 results=[
                     MatchResult(
                         grant_id="TOPIC-1",
@@ -112,6 +185,83 @@ def test_match_endpoint_returns_ranked_results():
     assert response.status_code == 200
     assert response.json()["results"][0]["grant_id"] == "TOPIC-1"
     assert response.json()["results"][0]["fit_score"] == 92
+    assert response.json()["degraded"] is True
+    assert response.json()["degradation_reasons"] == ["openai_scoring_failed"]
+
+
+def test_readiness_endpoint_distinguishes_usable_matching():
+    class FakeState:
+        def ensure_indexing_started(self) -> None:
+            return None
+
+        def get_status(self) -> IndexStatus:
+            return IndexStatus(
+                phase="building",
+                message="Indexing grants",
+                indexed_grants=3,
+                scanned_prefixes=2,
+                total_prefixes=10,
+                failed_prefixes=0,
+                truncated_prefixes=0,
+                embeddings_ready=False,
+                degraded=False,
+                coverage_complete=False,
+                matching_available=False,
+                degradation_reasons=[],
+            )
+
+    client = TestClient(create_app(app_state=FakeState()))
+
+    response = client.get("/api/ready")
+
+    assert response.status_code == 503
+    assert response.json()["status"] == "not_ready"
+
+
+def test_match_endpoint_allows_ready_degraded_state():
+    class FakeState:
+        def ensure_indexing_started(self) -> None:
+            return None
+
+        def get_status(self) -> IndexStatus:
+            return IndexStatus(
+                phase="ready_degraded",
+                message="Index ready with degraded quality",
+                indexed_grants=1,
+                scanned_prefixes=1,
+                total_prefixes=1,
+                failed_prefixes=0,
+                truncated_prefixes=0,
+                embeddings_ready=False,
+                degraded=True,
+                coverage_complete=True,
+                matching_available=True,
+                degradation_reasons=["lexical_only_mode"],
+            )
+
+        def get_grants(self) -> list[object]:
+            return ["placeholder"]
+
+    class FakeMatchService:
+        def match(
+            self,
+            company_description: str,
+            grants: list[object],
+            now=None,
+            limit: int = 10,
+            base_degradation_reasons=None,
+        ) -> MatchResponse:
+            return MatchResponse(indexed_grants=1, degraded=True, degradation_reasons=["lexical_only_mode"], results=[])
+
+    client = TestClient(create_app(app_state=FakeState(), match_service=FakeMatchService()))
+
+    response = client.post(
+        "/api/match",
+        json={"company_description": "We build AI safety tooling across Europe."},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["degraded"] is True
 
 
 def test_match_endpoint_blocks_when_matching_unavailable():

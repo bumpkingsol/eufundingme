@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from backend.profile_resolver import DemoProfileResolver, resolve_demo_profiles_path, load_demo_profiles
+from backend.profile_resolver import DemoProfileResolver, load_demo_profiles, resolve_demo_profiles_path
 
 
 def test_demo_profile_resolver_returns_openai_profile_case_insensitive():
@@ -42,6 +42,14 @@ def test_demo_profile_resolver_returns_unresolved_without_expander():
     assert "Add one or two sentences" in resolution.message
 
 
+def test_demo_profiles_include_expected_demo_presets():
+    profiles = load_demo_profiles()
+
+    assert "openai" in profiles
+    assert "northvolt" in profiles
+    assert "doctolib" in profiles
+
+
 def test_demo_profiles_uses_explicit_path_override(monkeypatch, tmp_path):
     override_file = tmp_path / "DEMO-PROFILES.md"
     override_file.write_text(
@@ -67,8 +75,10 @@ def test_resolve_demo_profiles_path_uses_fallback_when_no_candidates(monkeypatch
     monkeypatch.delenv("DEMO_PROFILES_PATH", raising=False)
     monkeypatch.chdir(tmp_path)
 
-    # Force all candidate files to appear missing so fallback is exercised.
-    monkeypatch.setattr("pathlib.Path.exists", lambda _self: False, raising=False)
+    def fake_exists(path: Path) -> bool:
+        return path == tmp_path / "DEMO-PROFILES.md"
+
+    monkeypatch.setattr("pathlib.Path.exists", fake_exists, raising=False)
 
     assert resolve_demo_profiles_path() == tmp_path / "DEMO-PROFILES.md"
 

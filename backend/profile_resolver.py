@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import re
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -9,6 +9,7 @@ from openai import OpenAI
 from pydantic import BaseModel
 
 DEMO_PROFILES_DEFAULT_NAME = "DEMO-PROFILES.md"
+DEFAULT_DEMO_PRESET_NAMES = ("OpenAI", "Northvolt", "Doctolib")
 PROFILE_SECTION_PATTERN = re.compile(
     r"^##\s+\d+\.\s+(?P<name>.+?)(?:\s+\(.*?\))?\n\n\*\*Description:\*\*\n(?P<description>.*?)\n\n\*\*Expected matches:\*\*",
     re.MULTILINE | re.DOTALL,
@@ -34,7 +35,13 @@ class ExpandedCompanyProfile(BaseModel):
 
 
 class OpenAICompanyProfileExpander:
-    def __init__(self, *, api_key: str, model: str = "gpt-4o-2024-08-06", client: OpenAI | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str = "gpt-4o-2024-08-06",
+        client: OpenAI | None = None,
+    ) -> None:
         self.model = model
         self.client = client or OpenAI(api_key=api_key)
 
@@ -74,32 +81,44 @@ def resolve_demo_profiles_path() -> Path:
     if package_path.exists():
         return package_path
 
+    resolved_path = Path(__file__).resolve()
     parent_candidates = [
-        Path(__file__).resolve().parents[2] / DEMO_PROFILES_DEFAULT_NAME,
-        Path(__file__).resolve().parents[3] / DEMO_PROFILES_DEFAULT_NAME,
-        Path(__file__).resolve().parents[4] / DEMO_PROFILES_DEFAULT_NAME,
-        Path(__file__).resolve().parents[5] / DEMO_PROFILES_DEFAULT_NAME,
+        parent / DEMO_PROFILES_DEFAULT_NAME for parent in resolved_path.parents[1:6]
     ]
     for candidate in parent_candidates:
         if candidate.exists():
             return candidate
 
-    fallback = Path.cwd() / DEMO_PROFILES_DEFAULT_NAME
-    return fallback
+    return Path.cwd() / DEMO_PROFILES_DEFAULT_NAME
 
 
 def load_demo_profiles(markdown_path: Path | None = None) -> dict[str, tuple[str, str]]:
-    markdown_path = markdown_path or resolve_demo_profiles_path()
-    if not markdown_path.exists():
+    active_path = markdown_path or resolve_demo_profiles_path()
+    if not active_path.exists():
         return {}
 
-    content = markdown_path.read_text(encoding="utf-8")
+    content = active_path.read_text(encoding="utf-8")
     profiles: dict[str, tuple[str, str]] = {}
     for match in PROFILE_SECTION_PATTERN.finditer(content):
         display_name = match.group("name").strip()
         description = " ".join(line.strip() for line in match.group("description").splitlines() if line.strip())
         profiles[normalize_company_query(display_name)] = (display_name, description)
     return profiles
+
+
+def build_demo_presets(
+    profiles: dict[str, tuple[str, str]] | None = None,
+    preset_names: tuple[str, ...] = DEFAULT_DEMO_PRESET_NAMES,
+) -> list[dict[str, str]]:
+    active_profiles = profiles or load_demo_profiles()
+    presets: list[dict[str, str]] = []
+    for name in preset_names:
+        profile = active_profiles.get(normalize_company_query(name))
+        if profile is None:
+            continue
+        display_name, description = profile
+        presets.append({"name": display_name, "profile": description})
+    return presets
 
 
 class DemoProfileResolver:

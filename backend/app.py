@@ -2,27 +2,45 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+import json
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 import sentry_sdk
 
 from .config import Settings, load_settings
 from .embeddings import EmbeddingService, embedding_shortlist, lexical_shortlist
 from .matcher import MatchService, OpenAIScorer
-from .models import HealthResponse, IndexStatus, MatchRequest, MatchResponse, ProfileResolveRequest, ProfileResolveResponse
-from .profile_resolver import DemoProfileResolver, OpenAICompanyProfileExpander
-from .state import AppState
+from .models import (
+    HealthResponse,
+    IndexStatus,
+    MatchRequest,
+    MatchResponse,
+    ProfileResolveRequest,
+    ProfileResolveResponse,
+    ReadinessResponse,
+)
+from .profile_resolver import DemoProfileResolver, OpenAICompanyProfileExpander, build_demo_presets
 from .request_ids import resolve_request_id
+from .state import AppState
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+INDEX_HTML = FRONTEND_DIR / "index.html"
+FAVICON_SVG = (
+    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>"
+    "<rect width='64' height='64' rx='18' fill='#006d5b'/>"
+    "<path d='M18 24h28v6H18zm0 10h20v6H18zm0 10h28v6H18z' fill='#fff7ec'/>"
+    "</svg>"
+)
 _SENTRY_INITIALIZED = False
 MATCH_NOT_READY_ERROR_CODE = "INDEX_NOT_READY"
+logger = logging.getLogger(__name__)
 
 
 def is_match_ready(status: IndexStatus) -> bool:
-    return status.phase == "ready" and status.matching_available
+    return status.phase in {"ready", "ready_degraded"} and status.matching_available
 
 
 def build_match_unavailable_error(status: IndexStatus, request_id: str | None = None) -> dict:
@@ -76,8 +94,9 @@ def build_match_service(settings: Settings, app_state: AppState) -> MatchService
                         embedding_service=embedding_service,
                         limit=limit,
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.exception("Embedding shortlist failed")
+                    sentry_sdk.capture_exception(exc)
         return lexical_shortlist(company_description, grants, limit=limit)
 
     return MatchService(
@@ -125,14 +144,24 @@ def create_app(
         if active_settings.openai_api_key
         else None
     )
+    app.state.demo_presets = build_demo_presets(getattr(app.state.profile_resolver, "profiles", None))
 
     @app.get("/", include_in_schema=False)
-    def index() -> FileResponse:
-        return FileResponse(FRONTEND_DIR / "index.html")
+    def index() -> HTMLResponse:
+        html = INDEX_HTML.read_text(encoding="utf-8")
+        preset_script = (
+            f'<script>window.__DEMO_PRESETS__ = {json.dumps(app.state.demo_presets)};</script>\n'
+            '    <script src="/app.js" defer></script>'
+        )
+        return HTMLResponse(html.replace('<script src="/app.js" defer></script>', preset_script))
 
     @app.get("/styles.css", include_in_schema=False)
     def styles() -> FileResponse:
         return FileResponse(FRONTEND_DIR / "styles.css")
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon() -> HTMLResponse:
+        return HTMLResponse(FAVICON_SVG, media_type="image/svg+xml")
 
     @app.get("/app.js", include_in_schema=False)
     def javascript() -> FileResponse:
@@ -140,7 +169,28 @@ def create_app(
 
     @app.get("/api/health", response_model=HealthResponse)
     def health() -> HealthResponse:
-        return HealthResponse(status="ok")
+        status = app.state.app_state.get_status()
+        return HealthResponse(
+            status="ok",
+            readiness_phase=status.phase,
+            matching_available=status.matching_available,
+            degraded=status.degraded,
+        )
+
+    @app.get("/api/ready", response_model=ReadinessResponse)
+    def readiness() -> ReadinessResponse | JSONResponse:
+        app.state.app_state.ensure_indexing_started()
+        status = app.state.app_state.get_status()
+        readiness = ReadinessResponse(
+            status="ready" if status.matching_available else "not_ready",
+            phase=status.phase,
+            message=status.message,
+            degraded=status.degraded,
+            degradation_reasons=status.degradation_reasons,
+        )
+        if status.matching_available:
+            return readiness
+        return JSONResponse(status_code=503, content=readiness.model_dump())
 
     @app.get("/api/index/status", response_model=IndexStatus)
     def index_status() -> IndexStatus:
@@ -178,6 +228,7 @@ def create_app(
             grants,
             now=datetime.now(timezone.utc),
             limit=app.state.settings.shortlist_limit,
+            base_degradation_reasons=status.degradation_reasons,
         )
 
     @app.get("/sentry-debug")

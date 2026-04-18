@@ -195,6 +195,46 @@ body {
   box-shadow: 0 0 0 4px rgba(0, 109, 91, 0.08);
 }
 
+.demo-presets {
+  margin-bottom: 1rem;
+  padding: 0.95rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.52);
+}
+
+.preset-copy {
+  margin: 0 0 0.75rem;
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.preset-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.preset-button {
+  padding: 0.7rem 1rem;
+  background: rgba(255, 252, 247, 0.88);
+  color: var(--ink);
+  border: 1px solid rgba(29, 27, 24, 0.12);
+  box-shadow: none;
+}
+
+.preset-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: rgba(0, 109, 91, 0.32);
+}
+
+.preset-button.is-active {
+  background: linear-gradient(135deg, rgba(0, 109, 91, 0.16), rgba(0, 109, 91, 0.06));
+  border-color: rgba(0, 109, 91, 0.42);
+  color: var(--accent-strong);
+}
+
 .form-row {
   display: flex;
   align-items: center;
@@ -413,6 +453,7 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 
+  .preset-buttons,
   .results-head,
   .result-head,
   .form-row {

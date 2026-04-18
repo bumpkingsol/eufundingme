@@ -8,6 +8,10 @@
       name="description"
       content="Find EU funding for your company in 30 seconds."
     />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%23006d5b'/%3E%3Cpath d='M18 24h28v6H18zm0 10h20v6H18zm0 10h28v6H18z' fill='%23fff7ec'/%3E%3C/svg%3E"
+    />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -62,6 +66,10 @@
 
             <form id="match-form" class="match-form" novalidate>
               <label class="sr-only" for="company-description">Company description</label>
+              <div id="demo-presets" class="demo-presets" aria-label="Saved demo profiles">
+                <p class="preset-copy">Use a saved demo profile for the scripted flow, or type a company name for a live audience test.</p>
+                <div id="preset-buttons" class="preset-buttons"></div>
+              </div>
               <p id="resolution-banner" class="submit-hint" hidden></p>
               <textarea
                 id="company-description"
