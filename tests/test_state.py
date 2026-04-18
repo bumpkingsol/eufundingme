@@ -42,18 +42,18 @@ def test_app_state_loads_snapshot_and_marks_matching_available(tmp_path):
         grants=[make_grant("TOPIC-1")],
         embeddings={"TOPIC-1": [0.1, 0.2]},
         status_payload={
-            "phase": "ready_degraded",
-            "message": "Index ready with degraded coverage or matching quality",
+            "phase": "ready",
+            "message": "Index ready",
             "indexed_grants": 1,
             "scanned_prefixes": 1,
             "total_prefixes": 1,
             "failed_prefixes": 0,
             "truncated_prefixes": 0,
             "embeddings_ready": True,
-            "degraded": True,
+            "degraded": False,
             "coverage_complete": True,
             "matching_available": True,
-            "degradation_reasons": ["lexical_only_mode"],
+            "degradation_reasons": [],
         },
         written_at=saved_at,
     )
@@ -61,13 +61,54 @@ def test_app_state_loads_snapshot_and_marks_matching_available(tmp_path):
     state = AppState(settings=settings, prefixes=["AI-2026"])
     status = state.get_status()
 
-    assert status.phase == "ready_degraded"
+    assert status.phase == "ready"
+    assert status.degraded is False
     assert status.matching_available is True
     assert status.snapshot_loaded is True
     assert status.snapshot_source == "runtime"
+    assert status.coverage_complete is True
     assert status.snapshot_age_seconds is not None
-    assert "stale_snapshot_mode" in status.degradation_reasons
+    assert "stale_snapshot_mode" not in status.degradation_reasons
     assert state.get_grants()[0].id == "TOPIC-1"
+
+
+def test_app_state_keeps_healthy_runtime_snapshot_ready_while_refresh_runs(tmp_path):
+    snapshot_path = tmp_path / "grant-index.json"
+    settings = make_settings(snapshot_path)
+    snapshot_store = IndexSnapshotStore(snapshot_path)
+    snapshot_store.save(
+        grants=[make_grant("TOPIC-1")],
+        embeddings={"TOPIC-1": [0.1, 0.2]},
+        status_payload={
+            "phase": "ready",
+            "message": "Index ready",
+            "indexed_grants": 1,
+            "scanned_prefixes": 1,
+            "total_prefixes": 1,
+            "failed_prefixes": 0,
+            "truncated_prefixes": 0,
+            "embeddings_ready": True,
+            "degraded": False,
+            "coverage_complete": True,
+            "matching_available": True,
+            "degradation_reasons": [],
+        },
+    )
+
+    class HangingClient:
+        def search(self, *, text: str, page_number: int, page_size: int) -> dict:
+            raise RuntimeError("stop after startup")
+
+    state = AppState(settings=settings, client=HangingClient(), prefixes=["AI-2026"])
+    state.ensure_indexing_started()
+    status = state.get_status()
+
+    assert status.phase == "ready"
+    assert status.degraded is False
+    assert status.snapshot_loaded is True
+    assert status.snapshot_source == "runtime"
+    assert status.refresh_in_progress is True
+    assert "stale_snapshot_mode" not in status.degradation_reasons
 
 
 def test_app_state_ignores_invalid_snapshot(tmp_path):

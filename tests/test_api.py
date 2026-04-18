@@ -210,7 +210,7 @@ def test_readiness_endpoint_reports_snapshot_backed_matching():
 
         def get_status(self) -> IndexStatus:
             return IndexStatus(
-                phase="ready_degraded",
+                phase="ready",
                 message="Using saved index while live refresh runs",
                 indexed_grants=12,
                 scanned_prefixes=1,
@@ -218,10 +218,10 @@ def test_readiness_endpoint_reports_snapshot_backed_matching():
                 failed_prefixes=0,
                 truncated_prefixes=0,
                 embeddings_ready=True,
-                degraded=True,
-                coverage_complete=False,
+                degraded=False,
+                coverage_complete=True,
                 matching_available=True,
-                degradation_reasons=["stale_snapshot_mode"],
+                degradation_reasons=[],
                 snapshot_loaded=True,
                 snapshot_source="runtime",
                 snapshot_age_seconds=90,

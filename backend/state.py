@@ -36,6 +36,15 @@ def _snapshot_written_at(snapshot) -> datetime:
         return datetime.min.replace(tzinfo=timezone.utc)
 
 
+def _is_healthy_runtime_snapshot(*, source: str, base_status: IndexStatus) -> bool:
+    return (
+        source == "runtime"
+        and not base_status.degraded
+        and base_status.coverage_complete
+        and base_status.matching_available
+    )
+
+
 class AppState:
     def __init__(
         self,
@@ -107,9 +116,12 @@ class AppState:
 
         status_payload = dict(snapshot.status_payload)
         base_status = IndexStatus.model_validate(status_payload)
-        reasons = [*base_status.degradation_reasons, "stale_snapshot_mode"]
+        healthy_runtime_snapshot = _is_healthy_runtime_snapshot(source=source, base_status=base_status)
+        reasons = list(base_status.degradation_reasons)
         if source == "bundled":
             reasons.append("bundled_seed_mode")
+        elif not healthy_runtime_snapshot:
+            reasons.append("stale_snapshot_mode")
         reasons = _dedupe_reasons(reasons)
 
         self._grants = grants
@@ -118,7 +130,7 @@ class AppState:
         self._snapshot_source = source
         self._snapshot_written_at = written_at
         self._status = IndexStatus(
-            phase="ready_degraded",
+            phase="ready" if healthy_runtime_snapshot else "ready_degraded",
             message="Using bundled seed snapshot while live refresh runs"
             if source == "bundled"
             else "Using saved index while live refresh runs",
@@ -128,8 +140,8 @@ class AppState:
             failed_prefixes=0,
             truncated_prefixes=0,
             embeddings_ready=base_status.embeddings_ready,
-            degraded=True,
-            coverage_complete=False,
+            degraded=not healthy_runtime_snapshot,
+            coverage_complete=base_status.coverage_complete if healthy_runtime_snapshot else False,
             matching_available=True,
             degradation_reasons=reasons,
             started_at=None,
@@ -157,18 +169,23 @@ class AppState:
             started_at = datetime.now(timezone.utc).isoformat()
             if self._snapshot_loaded and self._grants:
                 snapshot_reason = "bundled_seed_mode" if self._snapshot_source == "bundled" else "stale_snapshot_mode"
+                healthy_runtime_snapshot = (
+                    self._snapshot_source == "runtime"
+                    and not self._status.degraded
+                    and self._status.coverage_complete
+                )
                 self._status = self._status.model_copy(
                     update={
-                        "phase": "ready_degraded",
+                        "phase": "ready" if healthy_runtime_snapshot else "ready_degraded",
                         "message": "Using bundled seed snapshot while live refresh runs"
                         if self._snapshot_source == "bundled"
                         else "Using saved index while live refresh runs",
-                        "degraded": True,
+                        "degraded": not healthy_runtime_snapshot,
                         "matching_available": True,
-                        "coverage_complete": False,
-                        "degradation_reasons": _dedupe_reasons(
-                            [*self._status.degradation_reasons, snapshot_reason]
-                        ),
+                        "coverage_complete": True if healthy_runtime_snapshot else False,
+                        "degradation_reasons": self._status.degradation_reasons
+                        if healthy_runtime_snapshot
+                        else _dedupe_reasons([*self._status.degradation_reasons, snapshot_reason]),
                         "started_at": started_at,
                         "finished_at": self._status.finished_at,
                         "current_prefix": None,
@@ -427,7 +444,12 @@ class AppState:
     def _update_progress(self, progress: IndexBuildProgress) -> None:
         with self._lock:
             if self._snapshot_loaded and self._grants:
-                phase = "ready_degraded"
+                healthy_runtime_snapshot = (
+                    self._snapshot_source == "runtime"
+                    and not self._status.degraded
+                    and self._status.coverage_complete
+                )
+                phase = "ready" if healthy_runtime_snapshot else "ready_degraded"
                 message = (
                     "Using bundled seed snapshot while live refresh runs"
                     if self._snapshot_source == "bundled"
@@ -435,10 +457,15 @@ class AppState:
                 )
                 matching_available = True
                 indexed_grants = len(self._grants)
-                degraded = True
+                degraded = not healthy_runtime_snapshot
                 snapshot_reason = "bundled_seed_mode" if self._snapshot_source == "bundled" else "stale_snapshot_mode"
-                reasons = _dedupe_reasons([*self._status.degradation_reasons, snapshot_reason])
+                reasons = (
+                    list(self._status.degradation_reasons)
+                    if healthy_runtime_snapshot
+                    else _dedupe_reasons([*self._status.degradation_reasons, snapshot_reason])
+                )
                 embeddings_ready = self._status.embeddings_ready
+                coverage_complete = True if healthy_runtime_snapshot else False
             else:
                 phase = "building"
                 message = "Indexing live grants"
@@ -447,6 +474,7 @@ class AppState:
                 degraded = progress.failed_prefixes > 0
                 reasons = ["prefix_fetch_failed"] if progress.failed_prefixes > 0 else []
                 embeddings_ready = False
+                coverage_complete = False
 
             self._status = self._status.model_copy(
                 update={
@@ -457,7 +485,7 @@ class AppState:
                     "total_prefixes": progress.total_prefixes,
                     "failed_prefixes": progress.failed_prefixes,
                     "degraded": degraded,
-                    "coverage_complete": False,
+                    "coverage_complete": coverage_complete,
                     "matching_available": matching_available,
                     "degradation_reasons": reasons,
                     "current_prefix": progress.current_prefix,
