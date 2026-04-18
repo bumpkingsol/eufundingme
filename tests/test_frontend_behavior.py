@@ -1708,6 +1708,75 @@ if (!openedWindows[0].printCalled) {
     assert result.returncode == 0, result.stderr
 
 
+def test_frontend_opens_export_window_before_async_brief_fetch():
+    script = build_frontend_harness(
+        """
+let popupOpenAllowed = false;
+appContext.window.open = () => {
+  if (!popupOpenAllowed) {
+    return null;
+  }
+  const popup = {
+    html: "",
+    printCalled: false,
+    document: {
+      write(value) {
+        popup.html += value;
+      },
+      close() {},
+    },
+    print() {
+      popup.printCalled = true;
+    },
+  };
+  openedWindows.push(popup);
+  return popup;
+};
+
+appContext.renderResults([
+  {
+    grant_id: "TOPIC-1",
+    title: "AI Grant",
+    status: "Open",
+    deadline: "2026-08-01",
+    days_left: 20,
+    budget: "EUR 5M",
+    portal_url: "https://example.com/TOPIC-1",
+    fit_score: 90,
+    why_match: "Strong fit",
+    application_angle: "Lead with deployment",
+    framework_programme: "Horizon Europe",
+    programme_division: "Cluster 4",
+    keywords: ["ai"],
+  }
+], 42);
+descriptionInput.value = "We build AI tools for industrial companies.";
+
+popupOpenAllowed = true;
+const exportPromise = appContext.exportApplicationBrief("TOPIC-1");
+popupOpenAllowed = false;
+await exportPromise;
+
+if (openedWindows.length !== 1) {
+  throw new Error(`Expected one export window, got ${openedWindows.length}`);
+}
+if (!openedWindows[0].html.includes("Brief")) {
+  throw new Error(`Expected brief HTML in export window: ${openedWindows[0].html}`);
+}
+if (!openedWindows[0].printCalled) {
+  throw new Error("Expected print() to be called for export");
+}
+if (formFeedback.classList.contains("is-error")) {
+  throw new Error(`Did not expect export error feedback: ${formFeedback.textContent}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_frontend_logs_resolution_failures_before_fallback():
     script = build_frontend_harness(
         """
@@ -1725,6 +1794,32 @@ if (consoleErrors.length !== 1) {
 }
 if (!String(consoleErrors[0][0]).includes("resolver down")) {
   throw new Error(`Unexpected logged error: ${consoleErrors[0][0]}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_suppresses_abort_error_logging_for_status_timeout():
+    script = build_frontend_harness(
+        """
+timerQueue.length = 0;
+appContext.fetch = async () => {
+  const error = new Error("signal is aborted without reason");
+  error.name = "AbortError";
+  throw error;
+};
+
+await appContext.fetchStatus();
+
+if (consoleErrors.length !== 0) {
+  throw new Error(`Expected no console.error calls for AbortError, got ${consoleErrors.length}`);
+}
+if (elements.get("status-phase").textContent === "Error") {
+  throw new Error("Expected aborted poll not to switch UI into error state");
 }
 """
     )

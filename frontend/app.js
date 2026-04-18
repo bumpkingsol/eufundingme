@@ -894,6 +894,10 @@ function scheduleStatusPoll(delayMs) {
   statusPollHandle = window.setTimeout(fetchStatus, delayMs);
 }
 
+function isAbortError(error) {
+  return error?.name === "AbortError";
+}
+
 async function fetchStatus() {
   if (statusPollInFlight) {
     return;
@@ -912,6 +916,10 @@ async function fetchStatus() {
     updateStatus(status);
     scheduleStatusPoll(status.phase === "building" || status.refresh_in_progress ? 2500 : 5000);
   } catch (error) {
+    if (isAbortError(error)) {
+      scheduleStatusPoll(Math.min(15000, 2500 * (consecutiveStatusFailures + 1)));
+      return;
+    }
     console.error(error);
     consecutiveStatusFailures += 1;
     updateStatus({
@@ -1121,6 +1129,14 @@ async function exportApplicationBrief(grantId) {
   if (!matchResult) {
     return;
   }
+  const exportWindow = window.open("", "_blank");
+  if (!exportWindow) {
+    setFormFeedback("Could not open export window.", "error");
+    return;
+  }
+
+  exportWindow.document.write("<p>Preparing application brief…</p>");
+  exportWindow.document.close();
   try {
     const companyDescription = descriptionInput.value.trim();
     const grantDetail = grantDetailsById.get(grantId) || buildFallbackGrantDetail(grantId);
@@ -1146,16 +1162,14 @@ async function exportApplicationBrief(grantId) {
     }
 
     const payload = await response.json();
-    const exportWindow = window.open("", "_blank");
-    if (!exportWindow) {
-      throw new Error("Could not open export window.");
-    }
+    exportWindow.document.open?.();
     exportWindow.document.write(payload.html);
     exportWindow.document.close();
     exportWindow.print();
     setFormFeedback("Application brief prepared. Your print dialog should open in a new tab.");
   } catch (error) {
     console.error(error);
+    exportWindow.close?.();
     setFormFeedback(error.message || "Could not export the application brief.", "error");
   }
 }
