@@ -29,6 +29,13 @@ def _format_budget_eur(value: int) -> str:
     return f"EUR {value}"
 
 
+def _snapshot_written_at(snapshot) -> datetime:
+    try:
+        return datetime.fromisoformat(snapshot.written_at)
+    except ValueError:
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+
 class AppState:
     def __init__(
         self,
@@ -67,9 +74,25 @@ class AppState:
 
     def _load_snapshot(self) -> None:
         runtime_snapshot = self.snapshot_store.load()
-        if runtime_snapshot is not None and self._apply_snapshot(runtime_snapshot, source="runtime"):
-            return
         seed_snapshot = self.seed_snapshot_store.load()
+        candidates: list[tuple[str, object]] = []
+        if runtime_snapshot is not None:
+            candidates.append(("runtime", runtime_snapshot))
+        if seed_snapshot is not None:
+            candidates.append(("bundled", seed_snapshot))
+
+        for source, snapshot in sorted(
+            candidates,
+            key=lambda candidate: (
+                len(candidate[1].grants),
+                _snapshot_written_at(candidate[1]),
+                candidate[0] == "runtime",
+            ),
+            reverse=True,
+        ):
+            if self._apply_snapshot(snapshot, source=source):
+                return
+
         if seed_snapshot is not None and self._apply_snapshot(seed_snapshot, source="bundled"):
             return
 
