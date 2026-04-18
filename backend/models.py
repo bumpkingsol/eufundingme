@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 @dataclass(slots=True)
@@ -66,6 +66,31 @@ class ProfileResolveResponse(BaseModel):
     profile: str | None = None
     display_name: str | None = None
     source: str
+    message: str | None = None
+
+
+class ProfileFromWebsiteRequest(BaseModel):
+    url: str = Field(min_length=1, max_length=2048)
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def normalize_url(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise ValueError("url must be a string")
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("url must not be empty")
+        if "://" not in normalized:
+            return f"https://{normalized}"
+        return normalized
+
+
+class ProfileFromWebsiteResponse(BaseModel):
+    resolved: bool
+    profile: str | None = None
+    display_name: str | None = None
+    source: str
+    normalized_url: str | None = None
     message: str | None = None
 
 

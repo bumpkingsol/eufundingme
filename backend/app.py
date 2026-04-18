@@ -24,12 +24,15 @@ from .models import (
     MatchResponse,
     ProfileResolveRequest,
     ProfileResolveResponse,
+    ProfileFromWebsiteRequest,
+    ProfileFromWebsiteResponse,
     ReadinessResponse,
 )
 from .observability import bind_request_context, capture_backend_exception, initialize_sentry
 from .openai_client import build_openai_client
 from .profile_resolver import DemoProfileResolver, OpenAICompanyProfileExpander
 from .request_ids import resolve_request_id
+from .website_profile import OpenAIWebsiteProfileGenerator, WebsiteProfileService, fetch_website_html
 from .state import AppState
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
@@ -182,8 +185,24 @@ def create_app(
             model=active_settings.openai_profile_expansion_model,
             fallback_used=True,
             context=context,
-        ),
+            ),
+        )
+
+    website_profile_generator = (
+        OpenAIWebsiteProfileGenerator(
+            api_key=active_settings.openai_api_key,
+            model=active_settings.openai_profile_expansion_model,
+            client=build_openai_client(active_settings),
+            reasoning_effort=active_settings.openai_profile_reasoning_effort,
+        )
+        if active_settings.openai_api_key
+        else None
     )
+    if website_profile_generator is not None:
+        app.state.website_profile_service = WebsiteProfileService(
+            fetch_html=fetch_website_html,
+            generate_profile=website_profile_generator.generate,
+        )
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
@@ -269,6 +288,53 @@ def create_app(
             source=resolution.source,
             message=resolution.message,
         )
+
+    @app.post("/api/profile/from-website", response_model=ProfileFromWebsiteResponse)
+    def profile_from_website(
+        payload: ProfileFromWebsiteRequest,
+        x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
+    ) -> ProfileFromWebsiteResponse:
+        request_id = resolve_request_id(x_request_id)
+        bind_request_context(
+            operation="website_profile_resolve",
+            request_id=request_id,
+            model=active_settings.openai_profile_expansion_model if active_settings.openai_api_key else None,
+        )
+        website_profile_service = getattr(app.state, "website_profile_service", None)
+        if website_profile_service is None:
+            raise HTTPException(
+                status_code=503,
+                detail={"message": "website profile service unavailable", "request_id": request_id},
+            )
+        try:
+            resolution = website_profile_service.resolve(payload.url)
+            return ProfileFromWebsiteResponse(
+                resolved=resolution.resolved,
+                profile=resolution.profile,
+                display_name=resolution.display_name,
+                source=resolution.source,
+                normalized_url=resolution.normalized_url,
+                message=resolution.message,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"message": str(exc), "request_id": request_id},
+            ) from exc
+        except Exception as exc:
+            capture_backend_exception(
+                exc,
+                component="website_profile",
+                operation="generate_website_profile",
+                model=active_settings.openai_profile_expansion_model,
+                request_id=request_id,
+                fallback_used=False,
+                context={"url": payload.url},
+            )
+            raise HTTPException(
+                status_code=502,
+                detail={"message": str(exc), "request_id": request_id},
+            ) from exc
 
     @app.post("/api/match", response_model=MatchResponse)
     def match_company(

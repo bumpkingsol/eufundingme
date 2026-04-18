@@ -1,6 +1,9 @@
+import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from backend.app import create_app
+from backend.config import Settings
 from backend.models import (
     ApplicationBriefResponse,
     GrantDetailResponse,
@@ -8,6 +11,7 @@ from backend.models import (
     IndexSummary,
     MatchResponse,
     MatchResult,
+    ProfileFromWebsiteRequest,
 )
 
 
@@ -532,6 +536,83 @@ def test_profile_resolve_endpoint_returns_unresolved_without_match():
     }
 
 
+def test_profile_from_website_request_normalizes_and_validates_url():
+    request = ProfileFromWebsiteRequest(url="  sentry.io  ")
+
+    assert request.url == "https://sentry.io"
+
+
+def test_profile_from_website_request_rejects_whitespace_only_input():
+    with pytest.raises(ValueError):
+        ProfileFromWebsiteRequest(url="   ")
+
+
+@pytest.mark.parametrize("value", [123, None])
+def test_profile_from_website_request_rejects_non_string_input(value):
+    with pytest.raises(ValidationError):
+        ProfileFromWebsiteRequest(url=value)
+
+
+def test_profile_from_website_endpoint_returns_generated_profile():
+    class FakeWebsiteProfileService:
+        def resolve(self, url: str):
+            assert url == "https://sentry.io"
+            from backend.models import ProfileFromWebsiteResponse
+
+            return ProfileFromWebsiteResponse(
+                resolved=True,
+                profile="Sentry builds developer observability tooling.",
+                display_name="Sentry",
+                source="website_profile",
+                normalized_url="https://sentry.io",
+            )
+
+    app = create_app()
+    app.state.website_profile_service = FakeWebsiteProfileService()
+    client = TestClient(app)
+
+    response = client.post("/api/profile/from-website", json={"url": "sentry.io"})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "resolved": True,
+        "profile": "Sentry builds developer observability tooling.",
+        "display_name": "Sentry",
+        "source": "website_profile",
+        "normalized_url": "https://sentry.io",
+        "message": None,
+    }
+
+
+def test_profile_from_website_endpoint_reports_service_failure():
+    class FailingWebsiteProfileService:
+        def resolve(self, url: str):
+            assert url == "https://sentry.io"
+            raise RuntimeError("website profile generation failed")
+
+    app = create_app()
+    app.state.website_profile_service = FailingWebsiteProfileService()
+    client = TestClient(app)
+
+    response = client.post("/api/profile/from-website", json={"url": "sentry.io"})
+
+    assert response.status_code == 502
+    assert response.json()["detail"]["message"] == "website profile generation failed"
+    assert "request_id" in response.json()["detail"]
+
+
+def test_profile_from_website_endpoint_returns_503_when_service_unavailable():
+    app = create_app()
+    app.state.website_profile_service = None
+    client = TestClient(app)
+
+    response = client.post("/api/profile/from-website", json={"url": "sentry.io"})
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["message"] == "website profile service unavailable"
+    assert "request_id" in response.json()["detail"]
+
+
 def test_match_endpoint_keeps_short_description_validation():
     client = TestClient(create_app())
 
@@ -600,7 +681,7 @@ def test_application_brief_endpoint_returns_markdown_and_sections():
 
 
 def test_application_brief_endpoint_uses_fallback_generation_without_openai():
-    app = create_app()
+    app = create_app(settings=Settings(openai_api_key=None))
     client = TestClient(app)
 
     response = client.post(
