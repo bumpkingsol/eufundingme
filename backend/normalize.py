@@ -84,6 +84,7 @@ def normalize_grant(metadata: dict, result_url: str | None = None) -> GrantRecor
         title=title,
         status=status,
         portal_url=result_url or build_portal_url(identifier),
+        source_language=normalize_language(first_value(metadata.get("language"))),
         deadline=deadline_at.strftime("%Y-%m-%d") if deadline_at else trim_date(first_value(metadata.get("deadlineDate"))),
         deadline_at=deadline_at,
         budget_display=budget_display,
@@ -223,6 +224,13 @@ def clean_text(value) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def normalize_language(value) -> str | None:
+    text = clean_text(value)
+    if not text:
+        return None
+    return text.lower()
 
 
 def is_numericish(value: str | None) -> bool:

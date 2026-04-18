@@ -63,6 +63,15 @@ CALL_PREFIXES = [
 ]
 
 
+def grant_matches_prefix(grant: GrantRecord, prefix: str) -> bool:
+    normalized_prefix = prefix.strip().upper()
+    if not normalized_prefix:
+        return False
+    identifier = (grant.id or "").strip().upper()
+    call_identifier = (grant.call_identifier or "").strip().upper()
+    return identifier.startswith(normalized_prefix) or call_identifier.startswith(normalized_prefix)
+
+
 def filter_indexable_grants(
     grants: Sequence[GrantRecord],
     *,
@@ -147,13 +156,18 @@ def build_grant_index(
                     if not isinstance(raw_results, list) or not raw_results:
                         break
                     pages_fetched += 1
+                    matched_results_on_page = 0
                     for item in raw_results:
                         if not isinstance(item, dict):
                             continue
                         metadata = item.get("metadata", {})
                         if not isinstance(metadata, dict):
                             continue
-                        collected.append(normalize_grant(metadata, result_url=item.get("url")))
+                        grant = normalize_grant(metadata, result_url=item.get("url"))
+                        if not grant_matches_prefix(grant, prefix):
+                            continue
+                        collected.append(grant)
+                        matched_results_on_page += 1
                     if progress_callback is not None:
                         indexed_count = len(filter_indexable_grants(collected, now=reference_time))
                         progress_callback(
@@ -169,6 +183,8 @@ def build_grant_index(
                                 last_progress_at=datetime.now(timezone.utc).isoformat(),
                             )
                         )
+                    if matched_results_on_page == 0:
+                        break
                     total_results = payload.get("totalResults")
                     if isinstance(total_results, int) and total_results <= page_number * page_size:
                         break

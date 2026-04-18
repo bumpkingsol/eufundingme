@@ -51,6 +51,7 @@ def test_build_grant_index_merges_prefix_results_and_dedupes():
                             "metadata": {
                                 "title": ["AI Grant"],
                                 "identifier": ["TOPIC-1"],
+                                "callIdentifier": ["AI-2026-01"],
                                 "status": ["31094501"],
                                 "deadlineDate": ["2026-08-01T17:00:00Z"],
                             }
@@ -65,6 +66,7 @@ def test_build_grant_index_merges_prefix_results_and_dedupes():
                             "metadata": {
                                 "title": ["Battery Grant"],
                                 "identifier": ["TOPIC-2"],
+                                "callIdentifier": ["BATTERY-2026-01"],
                                 "status": ["31094502"],
                             }
                         },
@@ -72,6 +74,7 @@ def test_build_grant_index_merges_prefix_results_and_dedupes():
                             "metadata": {
                                 "title": ["AI Grant Duplicate"],
                                 "identifier": ["TOPIC-1"],
+                                "callIdentifier": ["BATTERY-2026-02"],
                                 "status": ["31094501"],
                                 "deadlineDate": ["2026-08-01T17:00:00Z"],
                             }
@@ -144,6 +147,7 @@ def test_build_grant_index_crawls_multiple_pages_until_exhausted():
                             "metadata": {
                                 "title": ["Grant 1"],
                                 "identifier": ["TOPIC-1"],
+                                "callIdentifier": ["AI-2026-01"],
                                 "status": ["31094501"],
                                 "deadlineDate": ["2026-08-01T17:00:00Z"],
                             }
@@ -158,6 +162,7 @@ def test_build_grant_index_crawls_multiple_pages_until_exhausted():
                             "metadata": {
                                 "title": ["Grant 2"],
                                 "identifier": ["TOPIC-2"],
+                                "callIdentifier": ["AI-2026-02"],
                                 "status": ["31094501"],
                                 "deadlineDate": ["2026-08-02T17:00:00Z"],
                             }
@@ -188,6 +193,7 @@ def test_build_grant_index_marks_truncated_prefixes_when_page_cap_is_hit():
                         "metadata": {
                             "title": [f"Grant {page_number}"],
                             "identifier": [f"TOPIC-{page_number}"],
+                            "callIdentifier": [f"AI-2026-{page_number:02d}"],
                             "status": ["31094501"],
                             "deadlineDate": ["2026-08-01T17:00:00Z"],
                         }
@@ -221,6 +227,7 @@ def test_build_grant_index_reports_failed_prefixes_without_raising():
                         "metadata": {
                             "title": ["Healthy Grant"],
                             "identifier": ["TOPIC-1"],
+                            "callIdentifier": ["HEALTHY-2026-01"],
                             "status": ["31094501"],
                             "deadlineDate": ["2026-08-01T17:00:00Z"],
                         }
@@ -250,6 +257,7 @@ def test_build_grant_index_reports_progress_for_each_page():
                             "metadata": {
                                 "title": ["Grant 1"],
                                 "identifier": ["TOPIC-1"],
+                                "callIdentifier": ["AI-2026-01"],
                                 "status": ["31094501"],
                                 "deadlineDate": ["2026-08-01T17:00:00Z"],
                             }
@@ -264,6 +272,7 @@ def test_build_grant_index_reports_progress_for_each_page():
                             "metadata": {
                                 "title": ["Grant 2"],
                                 "identifier": ["TOPIC-2"],
+                                "callIdentifier": ["AI-2026-02"],
                                 "status": ["31094501"],
                                 "deadlineDate": ["2026-08-02T17:00:00Z"],
                             }
@@ -376,6 +385,7 @@ def test_build_grant_index_emits_refresh_measurements(monkeypatch):
                         "metadata": {
                             "title": ["Grant 1"],
                             "identifier": ["TOPIC-1"],
+                            "callIdentifier": ["AI-2026-01"],
                             "status": ["31094501"],
                             "deadlineDate": ["2026-08-01T17:00:00Z"],
                         }
@@ -412,3 +422,64 @@ def test_build_grant_index_emits_refresh_measurements(monkeypatch):
     assert ("index_requests_completed", 1) in measurements
     assert ("index_pages_fetched", 1) in measurements
     assert ("index_indexed_grants", 1) in measurements
+
+
+def test_build_grant_index_ignores_out_of_family_results_and_stops_on_empty_prefix_page():
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int]] = []
+
+        def search(self, *, text: str, page_number: int, page_size: int) -> dict:
+            self.calls.append((text, page_number))
+            if page_number == 1:
+                return {
+                    "results": [
+                        {
+                            "metadata": {
+                                "title": ["Matched Grant"],
+                                "identifier": ["TOPIC-1"],
+                                "callIdentifier": ["AI-2026-01"],
+                                "status": ["31094501"],
+                                "deadlineDate": ["2026-08-01T17:00:00Z"],
+                            }
+                        },
+                        {
+                            "metadata": {
+                                "title": ["Irrelevant Grant"],
+                                "identifier": ["OTHER-1"],
+                                "callIdentifier": ["OTHER-2026-01"],
+                                "status": ["31094501"],
+                                "deadlineDate": ["2026-08-01T17:00:00Z"],
+                            }
+                        },
+                    ],
+                    "totalResults": 500,
+                }
+            if page_number == 2:
+                return {
+                    "results": [
+                        {
+                            "metadata": {
+                                "title": ["Still Irrelevant"],
+                                "identifier": ["OTHER-2"],
+                                "callIdentifier": ["OTHER-2026-02"],
+                                "status": ["31094501"],
+                                "deadlineDate": ["2026-08-02T17:00:00Z"],
+                            }
+                        }
+                    ],
+                    "totalResults": 500,
+                }
+            return {"results": [], "totalResults": 500}
+
+    client = FakeClient()
+
+    grants, build_details = build_grant_index(
+        client=client,
+        prefixes=["AI-2026"],
+        now=datetime(2026, 4, 18, tzinfo=timezone.utc),
+    )
+
+    assert [grant.id for grant in grants] == ["TOPIC-1"]
+    assert client.calls == [("AI-2026", 1)]
+    assert build_details.failed_prefixes == 0

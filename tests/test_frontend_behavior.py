@@ -1043,6 +1043,53 @@ if (elements.get("status-source").textContent !== "bundled seed snapshot (2m old
     assert result.returncode == 0, result.stderr
 
 
+def test_frontend_labels_live_retrieval_source_when_snapshot_absent():
+    script = build_frontend_harness(
+        """
+statusResponse = {
+  ok: true,
+  json: async () => ({
+    phase: "idle",
+    message: "Live retrieval ready",
+    indexed_grants: 0,
+    scanned_prefixes: 0,
+    total_prefixes: 0,
+    failed_prefixes: 0,
+    truncated_prefixes: 0,
+    embeddings_ready: false,
+    embeddings_available: true,
+    ai_scoring_available: true,
+    live_retrieval_available: true,
+    matching_available: false,
+    coverage_complete: false,
+    degraded: false,
+    degradation_reasons: [],
+    snapshot_loaded: false,
+    snapshot_source: null,
+    refresh_in_progress: false,
+    current_prefix: null,
+    current_page: null,
+    last_progress_at: null,
+    snapshot_age_seconds: null,
+  }),
+};
+
+appContext.updateStatus(await statusResponse.json());
+
+if (elements.get("status-source").textContent !== "live retrieval") {
+  throw new Error(`Unexpected source label: ${elements.get("status-source").textContent}`);
+}
+if (elements.get("status-embeddings").textContent !== "on-demand") {
+  throw new Error(`Unexpected embeddings label: ${elements.get("status-embeddings").textContent}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_frontend_agent_handoff_copy_writes_expected_instructions():
     script = build_frontend_harness(
         """
@@ -1358,6 +1405,40 @@ if (!resultsMeta.textContent.includes("Keyword-only fallback is active")) {
     assert result.returncode == 0, result.stderr
 
 
+def test_frontend_describes_live_result_source_in_results_meta():
+    script = build_frontend_harness(
+        """
+appContext.renderResults(
+  [
+    {
+      grant_id: "TOPIC-1",
+      title: "Live grant",
+      status: "Open",
+      portal_url: "https://example.com/TOPIC-1",
+      fit_score: 88,
+      why_match: "Strong live fit",
+      application_angle: "Lead with deployment",
+      keywords: ["ai"],
+    }
+  ],
+  18,
+  {
+    result_source: "live_retrieval",
+    degradation_reasons: [],
+  },
+);
+
+if (!resultsMeta.textContent.includes("from 18 live candidates")) {
+  throw new Error(`Unexpected live results meta: ${resultsMeta.textContent}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_frontend_fetches_grant_details_and_caches_repeat_expansions():
     script = build_frontend_harness(
         """
@@ -1414,6 +1495,59 @@ if (!resultsList.innerHTML.includes("EU entity")) {
     assert result.returncode == 0, result.stderr
 
 
+def test_frontend_renders_translation_note_on_results_and_details():
+    script = build_frontend_harness(
+        """
+appContext.renderResults([
+  {
+    grant_id: "TOPIC-BG",
+    title: "National innovation programme",
+    status: "Open",
+    deadline: "2026-08-01",
+    days_left: 20,
+    budget: "EUR 5M",
+    portal_url: "https://example.com/TOPIC-BG",
+    fit_score: 90,
+    why_match: "Strong fit",
+    application_angle: "Lead with deployment",
+    framework_programme: "Horizon Europe",
+    programme_division: "Cluster 4",
+    keywords: ["ai"],
+    source_language: "bg",
+    translated_from_source: true,
+    translation_note: "Translated from Bulgarian. This grant appears tied to Bulgaria.",
+  }
+], 42);
+
+queueDetailResponse("TOPIC-BG", {
+  grant_id: "TOPIC-BG",
+  full_description: "Detailed English description.",
+  eligibility_criteria: ["Bulgarian legal entities"],
+  submission_deadlines: [{ label: "Main deadline", value: "2026-08-01" }],
+  expected_outcomes: ["Support for SMEs"],
+  documents: [],
+  source: "topic_detail_json",
+  fallback_used: false,
+  source_language: "bg",
+  translated_from_source: true,
+  translation_note: "Translated from Bulgarian. This grant appears tied to Bulgaria.",
+});
+await appContext.toggleGrantDetails("TOPIC-BG");
+
+if (!resultsList.innerHTML.includes("Translated from Bulgarian")) {
+  throw new Error(`Expected translation note in result markup: ${resultsList.innerHTML}`);
+}
+if (!resultsList.innerHTML.includes("This grant appears tied to Bulgaria")) {
+  throw new Error(`Expected country note in result markup: ${resultsList.innerHTML}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_frontend_limits_comparison_mode_to_three_grants():
     script = build_frontend_harness(
         """
@@ -1437,6 +1571,40 @@ if (comparisonTable.innerHTML.includes("Grant 4")) {
 }
 if (comparisonEmpty.hidden !== true) {
   throw new Error("Expected empty comparison state to be hidden");
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_renders_corner_remove_toggle_for_favorites():
+    script = build_frontend_harness(
+        """
+const results = [
+  { grant_id: "TOPIC-1", title: "Grant 1", status: "Open", portal_url: "https://example.com/1", fit_score: 91, why_match: "Fit 1", application_angle: "Angle 1", keywords: [], budget: "EUR 5M", deadline: "2026-08-01", days_left: 20, framework_programme: "Horizon", programme_division: "Cluster 4" },
+  { grant_id: "TOPIC-2", title: "Grant 2", status: "Open", portal_url: "https://example.com/2", fit_score: 81, why_match: "Fit 2", application_angle: "Angle 2", keywords: [], budget: "EUR 4M", deadline: "2026-08-02", days_left: 21, framework_programme: "LIFE", programme_division: "Climate" },
+];
+appContext.renderResults(results, 42);
+appContext.toggleComparisonGrant("TOPIC-1");
+appContext.toggleComparisonGrant("TOPIC-2");
+
+if (!comparisonTable.innerHTML.includes("comparison-remove-button")) {
+  throw new Error(`Expected remove button in favorites card: ${comparisonTable.innerHTML}`);
+}
+if (!comparisonTable.innerHTML.includes("Remove Grant 1 from favorites")) {
+  throw new Error(`Expected accessible remove label in favorites card: ${comparisonTable.innerHTML}`);
+}
+
+appContext.toggleComparisonGrant("TOPIC-1");
+
+if (comparisonTable.innerHTML.includes("Grant 1")) {
+  throw new Error(`Expected Grant 1 to be removed from favorites: ${comparisonTable.innerHTML}`);
+}
+if (!comparisonTable.innerHTML.includes("Grant 2")) {
+  throw new Error(`Expected Grant 2 to remain in favorites: ${comparisonTable.innerHTML}`);
 }
 """
     )
@@ -1540,6 +1708,75 @@ if (!openedWindows[0].printCalled) {
     assert result.returncode == 0, result.stderr
 
 
+def test_frontend_opens_export_window_before_async_brief_fetch():
+    script = build_frontend_harness(
+        """
+let popupOpenAllowed = false;
+appContext.window.open = () => {
+  if (!popupOpenAllowed) {
+    return null;
+  }
+  const popup = {
+    html: "",
+    printCalled: false,
+    document: {
+      write(value) {
+        popup.html += value;
+      },
+      close() {},
+    },
+    print() {
+      popup.printCalled = true;
+    },
+  };
+  openedWindows.push(popup);
+  return popup;
+};
+
+appContext.renderResults([
+  {
+    grant_id: "TOPIC-1",
+    title: "AI Grant",
+    status: "Open",
+    deadline: "2026-08-01",
+    days_left: 20,
+    budget: "EUR 5M",
+    portal_url: "https://example.com/TOPIC-1",
+    fit_score: 90,
+    why_match: "Strong fit",
+    application_angle: "Lead with deployment",
+    framework_programme: "Horizon Europe",
+    programme_division: "Cluster 4",
+    keywords: ["ai"],
+  }
+], 42);
+descriptionInput.value = "We build AI tools for industrial companies.";
+
+popupOpenAllowed = true;
+const exportPromise = appContext.exportApplicationBrief("TOPIC-1");
+popupOpenAllowed = false;
+await exportPromise;
+
+if (openedWindows.length !== 1) {
+  throw new Error(`Expected one export window, got ${openedWindows.length}`);
+}
+if (!openedWindows[0].html.includes("Brief")) {
+  throw new Error(`Expected brief HTML in export window: ${openedWindows[0].html}`);
+}
+if (!openedWindows[0].printCalled) {
+  throw new Error("Expected print() to be called for export");
+}
+if (formFeedback.classList.contains("is-error")) {
+  throw new Error(`Did not expect export error feedback: ${formFeedback.textContent}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_frontend_logs_resolution_failures_before_fallback():
     script = build_frontend_harness(
         """
@@ -1557,6 +1794,32 @@ if (consoleErrors.length !== 1) {
 }
 if (!String(consoleErrors[0][0]).includes("resolver down")) {
   throw new Error(`Unexpected logged error: ${consoleErrors[0][0]}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_suppresses_abort_error_logging_for_status_timeout():
+    script = build_frontend_harness(
+        """
+timerQueue.length = 0;
+appContext.fetch = async () => {
+  const error = new Error("signal is aborted without reason");
+  error.name = "AbortError";
+  throw error;
+};
+
+await appContext.fetchStatus();
+
+if (consoleErrors.length !== 0) {
+  throw new Error(`Expected no console.error calls for AbortError, got ${consoleErrors.length}`);
+}
+if (elements.get("status-phase").textContent === "Error") {
+  throw new Error("Expected aborted poll not to switch UI into error state");
 }
 """
     )
@@ -1591,6 +1854,13 @@ detailResponses.set("/api/grants/TOPIC-1", {
   ok: false,
   json: async () => ({})
 });
+detailResponses.set(
+  "https://ec.europa.eu/info/funding-tenders/opportunities/data/topicDetails/TOPIC-1.json",
+  {
+    ok: false,
+    json: async () => ({}),
+  },
+);
 
 await appContext.toggleGrantDetails("TOPIC-1");
 
@@ -1602,6 +1872,69 @@ if (!String(consoleErrors[0][0]).includes("Could not load topic detail")) {
 }
 if (!resultsList.innerHTML.includes("Not available")) {
   throw new Error(`Expected fallback details to render: ${resultsList.innerHTML}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_fetches_topic_detail_from_browser_when_backend_fails():
+    script = build_frontend_harness(
+        """
+appContext.renderResults([
+  {
+    grant_id: "TOPIC-1",
+    title: "AI Grant",
+    status: "Open",
+    deadline: "2026-08-01",
+    days_left: 20,
+    budget: "EUR 5M",
+    portal_url: "https://example.com/TOPIC-1",
+    fit_score: 90,
+    why_match: "Strong fit",
+    application_angle: "Lead with deployment",
+    framework_programme: "Horizon Europe",
+    programme_division: "Cluster 4",
+    keywords: ["ai"],
+  }
+], 42);
+
+detailResponses.set("/api/grants/TOPIC-1", {
+  ok: false,
+  json: async () => ({})
+});
+detailResponses.set(
+  "https://ec.europa.eu/info/funding-tenders/opportunities/data/topicDetails/TOPIC-1.json",
+  {
+    ok: true,
+    json: async () => ({
+      topicDetails: {
+        summary: { identifier: "TOPIC-1", deadlineDate: "2026-08-01T17:00:00Z" },
+        sections: {
+          objective: "<p>Detailed grant description.</p>",
+          expectedOutcomes: ["<p>Outcome A</p>"],
+          eligibilityConditions: "<ul><li>EU entity</li></ul>",
+          documents: [{ title: "Guide", url: "https://example.com/guide.pdf" }],
+          partnerSearch: true,
+        },
+      },
+    }),
+  },
+);
+
+await appContext.toggleGrantDetails("TOPIC-1");
+
+if (!resultsList.innerHTML.includes("Detailed grant description.")) {
+  throw new Error(`Expected browser detail content in results markup: ${resultsList.innerHTML}`);
+}
+if (!resultsList.innerHTML.includes("EU entity")) {
+  throw new Error(`Expected browser eligibility content in results markup: ${resultsList.innerHTML}`);
+}
+if (resultsList.innerHTML.includes("No expanded description available yet.")) {
+  throw new Error(`Expected browser detail fetch to avoid generic fallback: ${resultsList.innerHTML}`);
 }
 """
     )

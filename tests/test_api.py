@@ -1,10 +1,14 @@
+from datetime import datetime
+
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from backend.app import create_app
 from backend.config import Settings
+from backend.live_grants import LiveGrantRetrievalResult
 from backend.models import (
+    GrantRecord,
     ApplicationBriefResponse,
     GrantDetailResponse,
     IndexStatus,
@@ -216,6 +220,36 @@ def test_readiness_endpoint_reports_bundled_seed_matching():
     assert response.json()["snapshot_source"] == "bundled"
 
 
+def test_readiness_endpoint_reports_live_retrieval_capabilities():
+    class FakeState:
+        def ensure_indexing_started(self) -> None:
+            return None
+
+        def get_status(self) -> IndexStatus:
+            return IndexStatus(
+                phase="idle",
+                message="Snapshot cache unavailable",
+                indexed_grants=0,
+                scanned_prefixes=0,
+                total_prefixes=0,
+                failed_prefixes=0,
+                truncated_prefixes=0,
+                embeddings_ready=False,
+                degraded=False,
+                coverage_complete=False,
+                matching_available=False,
+                degradation_reasons=[],
+            )
+
+    client = TestClient(create_app(app_state=FakeState()))
+
+    response = client.get("/api/ready")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
+    assert response.json()["live_retrieval_available"] is True
+
+
 def test_match_endpoint_returns_ranked_results():
     class FakeState:
         def ensure_indexing_started(self) -> None:
@@ -287,6 +321,185 @@ def test_match_endpoint_returns_ranked_results():
     assert response.json()["results"][0]["fit_score"] == 92
     assert response.json()["degraded"] is True
     assert response.json()["degradation_reasons"] == ["openai_scoring_failed"]
+
+
+def test_match_endpoint_returns_translated_non_english_results():
+    class FakeState:
+        def ensure_indexing_started(self) -> None:
+            return None
+
+        def get_status(self) -> IndexStatus:
+            return IndexStatus(
+                phase="ready",
+                message="Ready",
+                indexed_grants=1,
+                scanned_prefixes=1,
+                total_prefixes=1,
+                failed_prefixes=0,
+                embeddings_ready=True,
+                truncated_prefixes=0,
+                degraded=False,
+                coverage_complete=True,
+                matching_available=True,
+                degradation_reasons=[],
+            )
+
+        def get_grants(self) -> list[object]:
+            from backend.models import GrantRecord
+
+            return [
+                GrantRecord(
+                    id="TOPIC-BG",
+                    title="Национална програма за иновации",
+                    status="Open",
+                    portal_url="https://example.com/TOPIC-BG",
+                    source_language="bg",
+                    description="Програма за България",
+                    keywords=["innovation"],
+                    search_text="innovation",
+                )
+            ]
+
+    class FakeMatchService:
+        def match(self, company_description: str, grants: list[object], now=None, limit: int = 10, base_degradation_reasons=None) -> MatchResponse:
+            return MatchResponse(
+                indexed_grants=1,
+                results=[
+                    MatchResult(
+                        grant_id="TOPIC-BG",
+                        title="Национална програма за иновации",
+                        status="Open",
+                        portal_url="https://example.com/TOPIC-BG",
+                        fit_score=88,
+                        why_match="Strong fit",
+                        application_angle="Lead with deployment",
+                        keywords=[],
+                    )
+                ],
+            )
+
+    class FakeTranslationService:
+        def translate_match_response(self, response, grants):
+            return response.model_copy(
+                update={
+                    "results": [
+                        response.results[0].model_copy(
+                            update={
+                                "title": "National innovation programme",
+                                "source_language": "bg",
+                                "translated_from_source": True,
+                                "translation_note": "Translated from Bulgarian. This grant appears tied to Bulgaria.",
+                            }
+                        )
+                    ]
+                }
+            )
+
+        def translate_grant_detail(self, detail, grant=None):
+            return detail
+
+    app = create_app(app_state=FakeState(), match_service=FakeMatchService())
+    app.state.translation_service = FakeTranslationService()
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/match",
+        json={"company_description": "We build AI safety tooling across Europe."},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["results"][0]["title"] == "National innovation programme"
+    assert payload["results"][0]["source_language"] == "bg"
+    assert payload["results"][0]["translated_from_source"] is True
+    assert "Bulgaria" in payload["results"][0]["translation_note"]
+
+
+def test_match_endpoint_prefers_live_retrieval_and_reports_result_source():
+    live_grant = GrantRecord(
+        id="LIVE-1",
+        title="Live AI Grant",
+        status="Open",
+        portal_url="https://example.com/LIVE-1",
+        deadline="2026-08-01",
+        deadline_at=datetime.fromisoformat("2026-08-01T17:00:00+00:00"),
+        keywords=["ai", "safety"],
+        framework_programme="Horizon Europe",
+        programme_division="Cluster 4",
+        search_text="live ai grant ai safety",
+    )
+
+    class FakeState:
+        def ensure_indexing_started(self) -> None:
+            return None
+
+        def get_status(self) -> IndexStatus:
+            return IndexStatus(
+                phase="ready_degraded",
+                message="Snapshot cache ready",
+                indexed_grants=32,
+                scanned_prefixes=0,
+                total_prefixes=0,
+                failed_prefixes=0,
+                embeddings_ready=False,
+                truncated_prefixes=0,
+                degraded=True,
+                coverage_complete=False,
+                matching_available=True,
+                degradation_reasons=["stale_snapshot_mode"],
+                snapshot_loaded=True,
+                snapshot_source="runtime",
+            )
+
+        def get_grants(self) -> list[object]:
+            return ["snapshot-grant"]
+
+    class FakeLiveGrantService:
+        def retrieve(self, company_description: str, *, now=None):
+            assert company_description == "We build AI safety tooling across Europe."
+            return LiveGrantRetrievalResult(grants=[live_grant], queries=["artificial intelligence"])
+
+    class FakeMatchService:
+        def match(
+            self,
+            company_description: str,
+            grants: list[object],
+            now=None,
+            limit: int = 10,
+            base_degradation_reasons=None,
+        ) -> MatchResponse:
+            assert grants == [live_grant]
+            assert "stale_snapshot_mode" not in (base_degradation_reasons or [])
+            return MatchResponse(
+                indexed_grants=1,
+                degraded=False,
+                degradation_reasons=[],
+                results=[
+                    MatchResult(
+                        grant_id="LIVE-1",
+                        title="Live AI Grant",
+                        status="Open",
+                        portal_url="https://example.com/LIVE-1",
+                        fit_score=90,
+                        why_match="Strong live fit.",
+                        application_angle="Lead with deployment.",
+                        keywords=["ai", "safety"],
+                    )
+                ],
+            )
+
+    client = TestClient(
+        create_app(
+            app_state=FakeState(),
+            match_service=FakeMatchService(),
+            live_grant_service=FakeLiveGrantService(),
+        )
+    )
+
+    response = client.post("/api/match", json={"company_description": "We build AI safety tooling across Europe."})
+
+    assert response.status_code == 200
+    assert response.json()["result_source"] == "live_retrieval"
 
 
 def test_readiness_endpoint_distinguishes_usable_matching():
