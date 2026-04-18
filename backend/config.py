@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 DEFAULT_OPENAI_TEXT_MODEL = "gpt-5.4-mini"
 DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-large"
+SENTRY_RELEASE_CI_ENV_VARS = (
+    "GITHUB_SHA",
+    "VERCEL_GIT_COMMIT_SHA",
+    "RENDER_GIT_COMMIT",
+)
 
 
 @dataclass(slots=True)
@@ -38,6 +44,36 @@ class Settings:
     index_refresh_stall_seconds: int = 60
 
 
+def _discover_git_commit_sha() -> str | None:
+    repo_root = Path(__file__).resolve().parent.parent
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+
+    commit_sha = completed.stdout.strip()
+    return commit_sha or None
+
+
+def _resolve_sentry_release() -> str | None:
+    explicit_release = os.getenv("SENTRY_RELEASE")
+    if explicit_release:
+        return explicit_release
+
+    for env_var in SENTRY_RELEASE_CI_ENV_VARS:
+        commit_sha = os.getenv(env_var)
+        if commit_sha:
+            return commit_sha
+
+    return _discover_git_commit_sha()
+
+
 def load_settings() -> Settings:
     raw_max_pages = os.getenv("EC_MAX_PAGES_PER_PREFIX")
     default_snapshot_path = Path(__file__).resolve().parent.parent / ".cache" / "grant-index.json"
@@ -58,7 +94,7 @@ def load_settings() -> Settings:
         openai_profile_reasoning_effort=os.getenv("OPENAI_PROFILE_REASONING_EFFORT", "none"),
         sentry_dsn=os.getenv("SENTRY_DSN"),
         sentry_environment=os.getenv("SENTRY_ENVIRONMENT", "development"),
-        sentry_release=os.getenv("SENTRY_RELEASE"),
+        sentry_release=_resolve_sentry_release(),
         sentry_send_default_pii=os.getenv("SENTRY_SEND_DEFAULT_PII", "false").lower() == "true",
         ec_page_size=int(os.getenv("EC_PAGE_SIZE", "100")),
         ec_max_pages_per_prefix=int(raw_max_pages) if raw_max_pages else None,

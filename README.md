@@ -30,6 +30,7 @@ export OPENAI_MATCH_REASONING_EFFORT=low
 export OPENAI_PROFILE_REASONING_EFFORT=none
 export SENTRY_DSN=...
 export SENTRY_ENVIRONMENT=development
+# Optional. If omitted, the app falls back to a CI commit SHA or local git HEAD.
 export SENTRY_RELEASE=...
 export SENTRY_SEND_DEFAULT_PII=false
 ```

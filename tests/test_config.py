@@ -47,6 +47,7 @@ def test_load_settings_uses_hardened_defaults(monkeypatch):
         "SENTRY_SEND_DEFAULT_PII",
     ]:
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr("backend.config._discover_git_commit_sha", lambda: None)
 
     settings = load_settings()
 
@@ -67,3 +68,25 @@ def test_load_settings_reads_seed_snapshot_override(monkeypatch):
     settings = load_settings()
 
     assert settings.index_seed_snapshot_path == "/tmp/demo-seed.json"
+
+
+def test_load_settings_falls_back_to_git_sha_for_sentry_release(monkeypatch):
+    monkeypatch.delenv("SENTRY_RELEASE", raising=False)
+    monkeypatch.delenv("GITHUB_SHA", raising=False)
+    monkeypatch.delenv("VERCEL_GIT_COMMIT_SHA", raising=False)
+    monkeypatch.delenv("RENDER_GIT_COMMIT", raising=False)
+    monkeypatch.setattr("backend.config._discover_git_commit_sha", lambda: "abc123def456")
+
+    settings = load_settings()
+
+    assert settings.sentry_release == "abc123def456"
+
+
+def test_load_settings_prefers_ci_commit_sha_over_git_fallback(monkeypatch):
+    monkeypatch.delenv("SENTRY_RELEASE", raising=False)
+    monkeypatch.setenv("GITHUB_SHA", "feedface1234")
+    monkeypatch.setattr("backend.config._discover_git_commit_sha", lambda: "abc123def456")
+
+    settings = load_settings()
+
+    assert settings.sentry_release == "feedface1234"
