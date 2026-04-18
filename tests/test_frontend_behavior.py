@@ -68,6 +68,9 @@ const selectorIds = [
   "company-description",
   "match-button",
   "quick-fill-openai",
+  "agent-handoff-copy",
+  "agent-handoff-status",
+  "agent-handoff-instructions",
   "submit-hint",
   "status-copy",
   "status-bar",
@@ -99,6 +102,15 @@ const document = {{
       throw new Error(`Unsupported selector: ${{selector}}`);
     }}
     return elements.get(selector.slice(1));
+  }},
+}};
+
+const clipboardWrites = [];
+const navigator = {{
+  clipboard: {{
+    async writeText(value) {{
+      clipboardWrites.push(value);
+    }},
   }},
 }};
 
@@ -173,9 +185,11 @@ const context = {{
   console,
   document,
   fetch: fetchMock,
+  navigator,
   window: {{
     setTimeout: setTimeoutMock,
     clearTimeout: clearTimeoutMock,
+    navigator,
   }},
   setTimeout: setTimeoutMock,
   clearTimeout: clearTimeoutMock,
@@ -187,11 +201,15 @@ context.globalThis = context;
 vm.runInNewContext(source, context, {{ filename: "app.js" }});
 await Promise.resolve();
 await Promise.resolve();
+const appContext = context;
 
 const form = elements.get("match-form");
 const descriptionInput = elements.get("company-description");
 const matchButton = elements.get("match-button");
 const quickFillButton = elements.get("quick-fill-openai");
+const handoffCopyButton = elements.get("agent-handoff-copy");
+const handoffStatus = elements.get("agent-handoff-status");
+const handoffInstructions = elements.get("agent-handoff-instructions");
 const resolutionBanner = elements.get("resolution-banner");
 const resultsEmpty = elements.get("results-empty");
 const resultsList = elements.get("results-list");
@@ -242,9 +260,9 @@ queueProfileResponse(
 
 descriptionInput.value = "OpenAI";
 await descriptionInput.dispatch("input");
-await flushTimers(2);
-await descriptionInput.dispatch("blur");
 await flushTimers(1);
+await descriptionInput.dispatch("blur");
+await flushTimers(2);
 
 const profileCalls = fetchCalls.filter((call) => call.url === "/api/profile/resolve");
 if (profileCalls.length !== 1) {
@@ -498,6 +516,159 @@ await flushTimers(1);
 
 if (document.title !== "EU Grant Matcher") {
   throw new Error(`Expected title reset for errors, got ${document.title}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_keeps_match_button_clickable_while_index_builds():
+    script = build_frontend_harness(
+        """
+statusResponse = {
+  ok: true,
+  json: async () => ({
+    phase: "building",
+    message: "Indexing live grants",
+    indexed_grants: 0,
+    scanned_prefixes: 0,
+    total_prefixes: 46,
+    failed_prefixes: 0,
+    truncated_prefixes: 0,
+    embeddings_ready: false,
+    matching_available: false,
+    coverage_complete: false,
+    degraded: false,
+    degradation_reasons: [],
+    snapshot_loaded: false,
+    refresh_in_progress: true,
+    current_prefix: null,
+    current_page: null,
+    last_progress_at: null,
+    snapshot_age_seconds: null,
+  }),
+};
+
+await flushTimers(1);
+
+if (matchButton.disabled) {
+  throw new Error("Expected match button to stay clickable while index is building");
+}
+
+matchResponse = {
+  ok: false,
+  json: async () => ({ detail: { message: "Indexing live grants" } }),
+};
+
+descriptionInput.value = "We build AI safety tooling for enterprise deployment across Europe.";
+await form.dispatch("submit");
+await flushTimers(1);
+
+if (resultsEmpty.textContent !== "Indexing live grants") {
+  throw new Error(`Expected readiness error to surface, got: ${resultsEmpty.textContent}`);
+}
+if (matchButton.disabled) {
+  throw new Error("Expected match button to re-enable after not-ready submit response");
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_labels_bundled_seed_snapshot_source():
+    script = build_frontend_harness(
+        """
+statusResponse = {
+  ok: true,
+  json: async () => ({
+    phase: "ready_degraded",
+    message: "Using bundled seed snapshot while live refresh runs",
+    indexed_grants: 12,
+    scanned_prefixes: 0,
+    total_prefixes: 46,
+    failed_prefixes: 0,
+    truncated_prefixes: 0,
+    embeddings_ready: true,
+    matching_available: true,
+    coverage_complete: false,
+    degraded: true,
+    degradation_reasons: ["bundled_seed_mode"],
+    snapshot_loaded: true,
+    snapshot_source: "bundled",
+    refresh_in_progress: true,
+    current_prefix: null,
+    current_page: null,
+    last_progress_at: null,
+    snapshot_age_seconds: 120,
+  }),
+};
+
+appContext.updateStatus(await statusResponse.json());
+
+if (elements.get("status-source").textContent !== "bundled seed snapshot (2m old)") {
+  throw new Error(`Unexpected source label: ${elements.get("status-source").textContent}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_agent_handoff_copy_writes_expected_instructions():
+    script = build_frontend_harness(
+        """
+if (!handoffInstructions.value.includes("eufundingme match --description")) {
+  throw new Error(`Missing match command in handoff text: ${handoffInstructions.value}`);
+}
+if (!handoffInstructions.value.includes("request_id")) {
+  throw new Error(`Missing request_id guidance in handoff text: ${handoffInstructions.value}`);
+}
+
+await handoffCopyButton.dispatch("click");
+await flushTimers(1);
+
+if (clipboardWrites.length !== 1) {
+  throw new Error(`Expected one clipboard write, got ${clipboardWrites.length}`);
+}
+if (clipboardWrites[0] !== handoffInstructions.value) {
+  throw new Error("Expected clipboard contents to match handoff instructions");
+}
+if (handoffStatus.textContent !== "Instructions copied. Paste them into your agent chat.") {
+  throw new Error(`Unexpected copy status: ${handoffStatus.textContent}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_agent_handoff_is_ready_before_any_search():
+    script = build_frontend_harness(
+        """
+if (!handoffInstructions.value.includes("python -m venv .venv")) {
+  throw new Error("Expected venv setup instructions to be present before any search");
+}
+if (!handoffInstructions.value.includes("eufundingme health")) {
+  throw new Error("Expected health verification instructions to be present");
+}
+if (!handoffInstructions.value.includes("eufundingme profile --query")) {
+  throw new Error("Expected profile command instructions to be present");
+}
+if (!handoffInstructions.value.includes("INDEX_NOT_READY")) {
+  throw new Error("Expected stable error code guidance to be present");
+}
+if (fetchCalls.some((call) => call.url === "/api/match")) {
+  throw new Error("Agent handoff should not trigger match requests on load");
 }
 """
     )

@@ -8,7 +8,7 @@ from .config import Settings
 from .ec_client import ECSearchClient
 from .embeddings import EmbeddingService, build_grant_embeddings
 from .indexer import CALL_PREFIXES, build_grant_index
-from .models import GrantRecord, IndexBuildProgress, IndexStatus
+from .models import GrantRecord, IndexBuildProgress, IndexStatus, IndexSummary
 from .observability import capture_backend_exception
 from .snapshot_store import IndexSnapshotStore, grant_from_snapshot_payload
 
@@ -17,6 +17,14 @@ logger = logging.getLogger(__name__)
 
 def _dedupe_reasons(reasons: list[str]) -> list[str]:
     return list(dict.fromkeys(reason for reason in reasons if reason))
+
+
+def _format_budget_eur(value: int) -> str:
+    if value >= 1_000_000:
+        return f"EUR {value / 1_000_000:.1f}M"
+    if value >= 1_000:
+        return f"EUR {value / 1_000:.1f}K"
+    return f"EUR {value}"
 
 
 class AppState:
@@ -37,11 +45,13 @@ class AppState:
         self.embedding_service = embedding_service
         self.prefixes = prefixes or list(CALL_PREFIXES)
         self.snapshot_store = IndexSnapshotStore(settings.index_snapshot_path)
+        self.seed_snapshot_store = IndexSnapshotStore(settings.index_seed_snapshot_path)
         self._lock = Lock()
         self._thread: Thread | None = None
         self._grants: list[GrantRecord] = []
         self._grant_embeddings: dict[str, list[float]] = {}
         self._snapshot_loaded = False
+        self._snapshot_source: str | None = None
         self._snapshot_written_at: datetime | None = None
         self._indexing_started_once = False
         self._status = IndexStatus(
@@ -54,14 +64,17 @@ class AppState:
         self._load_snapshot()
 
     def _load_snapshot(self) -> None:
-        snapshot = self.snapshot_store.load()
-        if snapshot is None:
+        runtime_snapshot = self.snapshot_store.load()
+        if runtime_snapshot is not None and self._apply_snapshot(runtime_snapshot, source="runtime"):
+            return
+        seed_snapshot = self.seed_snapshot_store.load()
+        if seed_snapshot is not None and self._apply_snapshot(seed_snapshot, source="bundled"):
             return
 
+    def _apply_snapshot(self, snapshot, *, source: str) -> bool:
         grants = [grant_from_snapshot_payload(payload) for payload in snapshot.grants]
         if not grants:
-            return
-
+            return False
         try:
             written_at = datetime.fromisoformat(snapshot.written_at)
         except ValueError:
@@ -69,15 +82,21 @@ class AppState:
 
         status_payload = dict(snapshot.status_payload)
         base_status = IndexStatus.model_validate(status_payload)
-        reasons = _dedupe_reasons([*base_status.degradation_reasons, "stale_snapshot_mode"])
+        reasons = [*base_status.degradation_reasons, "stale_snapshot_mode"]
+        if source == "bundled":
+            reasons.append("bundled_seed_mode")
+        reasons = _dedupe_reasons(reasons)
 
         self._grants = grants
         self._grant_embeddings = dict(snapshot.embeddings)
         self._snapshot_loaded = True
+        self._snapshot_source = source
         self._snapshot_written_at = written_at
         self._status = IndexStatus(
             phase="ready_degraded",
-            message="Using saved index while live refresh runs",
+            message="Using bundled seed snapshot while live refresh runs"
+            if source == "bundled"
+            else "Using saved index while live refresh runs",
             indexed_grants=len(grants),
             scanned_prefixes=0,
             total_prefixes=len(self.prefixes),
@@ -91,9 +110,11 @@ class AppState:
             started_at=None,
             finished_at=written_at.isoformat(),
             snapshot_loaded=True,
+            snapshot_source=source,
             snapshot_age_seconds=self._snapshot_age_seconds(reference_time=datetime.now(timezone.utc)),
             refresh_in_progress=False,
         )
+        return True
 
     def ensure_indexing_started(self) -> None:
         with self._lock:
@@ -110,15 +131,18 @@ class AppState:
 
             started_at = datetime.now(timezone.utc).isoformat()
             if self._snapshot_loaded and self._grants:
+                snapshot_reason = "bundled_seed_mode" if self._snapshot_source == "bundled" else "stale_snapshot_mode"
                 self._status = self._status.model_copy(
                     update={
                         "phase": "ready_degraded",
-                        "message": "Using saved index while live refresh runs",
+                        "message": "Using bundled seed snapshot while live refresh runs"
+                        if self._snapshot_source == "bundled"
+                        else "Using saved index while live refresh runs",
                         "degraded": True,
                         "matching_available": True,
                         "coverage_complete": False,
                         "degradation_reasons": _dedupe_reasons(
-                            [*self._status.degradation_reasons, "stale_snapshot_mode"]
+                            [*self._status.degradation_reasons, snapshot_reason]
                         ),
                         "started_at": started_at,
                         "finished_at": self._status.finished_at,
@@ -128,6 +152,7 @@ class AppState:
                         "requests_completed": 0,
                         "last_progress_at": None,
                         "snapshot_loaded": True,
+                        "snapshot_source": self._snapshot_source,
                         "snapshot_age_seconds": self._snapshot_age_seconds(),
                         "refresh_in_progress": True,
                         "refresh_indexed_grants": 0,
@@ -154,6 +179,7 @@ class AppState:
                     requests_completed=0,
                     last_progress_at=None,
                     snapshot_loaded=False,
+                    snapshot_source=None,
                     snapshot_age_seconds=None,
                     refresh_in_progress=True,
                     refresh_indexed_grants=0,
@@ -207,19 +233,23 @@ class AppState:
             degradation_reasons = _dedupe_reasons(degradation_reasons)
             if self._snapshot_loaded and self._grants and not grants and build_details.failed_prefixes > 0:
                 with self._lock:
+                    snapshot_reason = "bundled_seed_mode" if self._snapshot_source == "bundled" else "stale_snapshot_mode"
                     reasons = _dedupe_reasons(
-                        [*self._status.degradation_reasons, *degradation_reasons, "stale_snapshot_mode"]
+                        [*self._status.degradation_reasons, *degradation_reasons, snapshot_reason]
                     )
                     self._status = self._status.model_copy(
                         update={
                             "phase": "ready_degraded",
-                            "message": "Using saved index while live refresh returned no usable data",
+                            "message": "Using bundled seed snapshot while live refresh returned no usable data"
+                            if self._snapshot_source == "bundled"
+                            else "Using saved index while live refresh returned no usable data",
                             "degraded": True,
                             "matching_available": True,
                             "failed_prefixes": build_details.failed_prefixes,
                             "truncated_prefixes": build_details.truncated_prefixes,
                             "degradation_reasons": reasons,
                             "finished_at": finished_at.isoformat(),
+                            "snapshot_source": self._snapshot_source,
                             "refresh_in_progress": False,
                         }
                     )
@@ -246,6 +276,7 @@ class AppState:
                 requests_completed=0,
                 last_progress_at=finished_at.isoformat(),
                 snapshot_loaded=False,
+                snapshot_source=None,
                 snapshot_age_seconds=None,
                 refresh_in_progress=False,
                 refresh_indexed_grants=len(grants),
@@ -254,6 +285,7 @@ class AppState:
                 self._grants = grants
                 self._grant_embeddings = grant_embeddings
                 self._snapshot_loaded = False
+                self._snapshot_source = None
                 self._snapshot_written_at = finished_at
                 self._status = fresh_status
             self.snapshot_store.save(
@@ -276,17 +308,21 @@ class AppState:
             finished_at = datetime.now(timezone.utc).isoformat()
             with self._lock:
                 if self._snapshot_loaded and self._grants:
+                    snapshot_reason = "bundled_seed_mode" if self._snapshot_source == "bundled" else "stale_snapshot_mode"
                     reasons = _dedupe_reasons(
-                        [*self._status.degradation_reasons, "stale_snapshot_mode", "index_build_failed"]
+                        [*self._status.degradation_reasons, snapshot_reason, "index_build_failed"]
                     )
                     self._status = self._status.model_copy(
                         update={
                             "phase": "ready_degraded",
-                            "message": "Using saved index while live refresh failed",
+                            "message": "Using bundled seed snapshot while live refresh failed"
+                            if self._snapshot_source == "bundled"
+                            else "Using saved index while live refresh failed",
                             "degraded": True,
                             "matching_available": True,
                             "degradation_reasons": reasons,
                             "finished_at": finished_at,
+                            "snapshot_source": self._snapshot_source,
                             "refresh_in_progress": False,
                         }
                     )
@@ -312,6 +348,7 @@ class AppState:
                         requests_completed=self._status.requests_completed,
                         last_progress_at=self._status.last_progress_at,
                         snapshot_loaded=False,
+                        snapshot_source=None,
                         snapshot_age_seconds=None,
                         refresh_in_progress=False,
                         refresh_indexed_grants=self._status.refresh_indexed_grants,
@@ -322,11 +359,16 @@ class AppState:
         with self._lock:
             if self._snapshot_loaded and self._grants:
                 phase = "ready_degraded"
-                message = "Using saved index while live refresh runs"
+                message = (
+                    "Using bundled seed snapshot while live refresh runs"
+                    if self._snapshot_source == "bundled"
+                    else "Using saved index while live refresh runs"
+                )
                 matching_available = True
                 indexed_grants = len(self._grants)
                 degraded = True
-                reasons = _dedupe_reasons([*self._status.degradation_reasons, "stale_snapshot_mode"])
+                snapshot_reason = "bundled_seed_mode" if self._snapshot_source == "bundled" else "stale_snapshot_mode"
+                reasons = _dedupe_reasons([*self._status.degradation_reasons, snapshot_reason])
                 embeddings_ready = self._status.embeddings_ready
             else:
                 phase = "building"
@@ -357,6 +399,7 @@ class AppState:
                     "refresh_in_progress": True,
                     "refresh_indexed_grants": progress.indexed_grants,
                     "snapshot_loaded": self._snapshot_loaded,
+                    "snapshot_source": self._snapshot_source,
                     "snapshot_age_seconds": self._snapshot_age_seconds()
                     if self._snapshot_loaded
                     else None,
@@ -375,6 +418,9 @@ class AppState:
             status = self._status.model_copy(deep=True)
             if status.snapshot_loaded:
                 status.snapshot_age_seconds = self._snapshot_age_seconds()
+                status.snapshot_source = self._snapshot_source
+            else:
+                status.snapshot_source = None
             if status.refresh_in_progress and status.last_progress_at is not None:
                 try:
                     last_progress = datetime.fromisoformat(status.last_progress_at)
@@ -388,7 +434,8 @@ class AppState:
                     status.degradation_reasons = _dedupe_reasons(
                         [*status.degradation_reasons, "refresh_delayed"]
                     )
-            return status
+        status.summary = self.get_index_summary()
+        return status
 
     def get_grants(self) -> list[GrantRecord]:
         with self._lock:
@@ -397,3 +444,38 @@ class AppState:
     def get_grant_embeddings(self) -> dict[str, list[float]]:
         with self._lock:
             return dict(self._grant_embeddings)
+
+    def get_index_summary(self, now: datetime | None = None) -> IndexSummary:
+        with self._lock:
+            grants = list(self._grants)
+
+        reference_time = now or datetime.now(timezone.utc)
+        programme_count = len(
+            {
+                grant.framework_programme
+                for grant in grants
+                if grant.framework_programme
+            }
+        )
+        total_budget_eur = sum(
+            grant.budget_amount_eur
+            for grant in grants
+            if isinstance(grant.budget_amount_eur, int)
+        )
+        closest = min(
+            (
+                grant
+                for grant in grants
+                if grant.deadline_at is not None and grant.deadline_at >= reference_time
+            ),
+            key=lambda grant: grant.deadline_at,
+            default=None,
+        )
+        return IndexSummary(
+            total_grants=len(grants),
+            programme_count=programme_count,
+            total_budget_eur=total_budget_eur,
+            total_budget_display=_format_budget_eur(total_budget_eur) if total_budget_eur else None,
+            closest_deadline=closest.deadline if closest is not None else None,
+            closest_deadline_days=closest.days_left(now=reference_time) if closest is not None else None,
+        )

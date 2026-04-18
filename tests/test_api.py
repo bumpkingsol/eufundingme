@@ -1,7 +1,14 @@
 from fastapi.testclient import TestClient
 
 from backend.app import create_app
-from backend.models import IndexStatus, MatchResponse, MatchResult
+from backend.models import (
+    ApplicationBriefResponse,
+    GrantDetailResponse,
+    IndexStatus,
+    IndexSummary,
+    MatchResponse,
+    MatchResult,
+)
 
 
 def test_health_endpoint_returns_ok():
@@ -12,9 +19,9 @@ def test_health_endpoint_returns_ok():
     assert response.status_code == 200
     assert response.json() == {
         "status": "ok",
-        "readiness_phase": "idle",
-        "matching_available": False,
-        "degraded": False,
+        "readiness_phase": "ready_degraded",
+        "matching_available": True,
+        "degraded": True,
     }
 
 
@@ -38,6 +45,7 @@ def test_health_endpoint_reports_readiness_state():
                 matching_available=True,
                 degradation_reasons=["prefix_fetch_failed", "lexical_only_mode"],
                 snapshot_loaded=True,
+                snapshot_source="runtime",
                 snapshot_age_seconds=120,
                 refresh_in_progress=True,
             )
@@ -112,6 +120,16 @@ def test_index_status_endpoint_starts_indexing_and_returns_status():
         def get_grants(self) -> list[object]:
             return []
 
+        def get_index_summary(self) -> IndexSummary:
+            return IndexSummary(
+                total_grants=12,
+                programme_count=3,
+                total_budget_eur=9_000_000,
+                total_budget_display="EUR 9.0M",
+                closest_deadline="2026-08-01",
+                closest_deadline_days=14,
+            )
+
     app = create_app(app_state=FakeState())
     client = TestClient(app)
 
@@ -120,6 +138,7 @@ def test_index_status_endpoint_starts_indexing_and_returns_status():
     assert response.status_code == 200
     assert response.json()["phase"] == "building"
     assert response.json()["current_prefix"] == "HORIZON-CL4-2026"
+    assert response.json()["summary"]["programme_count"] == 3
     assert app.state.app_state.started is True
 
 
@@ -143,6 +162,7 @@ def test_readiness_endpoint_reports_snapshot_backed_matching():
                 matching_available=True,
                 degradation_reasons=["stale_snapshot_mode"],
                 snapshot_loaded=True,
+                snapshot_source="runtime",
                 snapshot_age_seconds=90,
                 refresh_in_progress=True,
             )
@@ -154,7 +174,42 @@ def test_readiness_endpoint_reports_snapshot_backed_matching():
     assert response.status_code == 200
     assert response.json()["status"] == "ready"
     assert response.json()["snapshot_loaded"] is True
+    assert response.json()["snapshot_source"] == "runtime"
     assert response.json()["refresh_in_progress"] is True
+
+
+def test_readiness_endpoint_reports_bundled_seed_matching():
+    class FakeState:
+        def ensure_indexing_started(self) -> None:
+            return None
+
+        def get_status(self) -> IndexStatus:
+            return IndexStatus(
+                phase="ready_degraded",
+                message="Using bundled seed snapshot while live refresh runs",
+                indexed_grants=12,
+                scanned_prefixes=0,
+                total_prefixes=10,
+                failed_prefixes=0,
+                truncated_prefixes=0,
+                embeddings_ready=True,
+                degraded=True,
+                coverage_complete=False,
+                matching_available=True,
+                degradation_reasons=["bundled_seed_mode"],
+                snapshot_loaded=True,
+                snapshot_source="bundled",
+                snapshot_age_seconds=90,
+                refresh_in_progress=True,
+            )
+
+    client = TestClient(create_app(app_state=FakeState()))
+
+    response = client.get("/api/ready")
+
+    assert response.status_code == 200
+    assert response.json()["snapshot_loaded"] is True
+    assert response.json()["snapshot_source"] == "bundled"
 
 
 def test_match_endpoint_returns_ranked_results():
@@ -431,3 +486,101 @@ def test_match_endpoint_keeps_short_description_validation():
     response = client.post("/api/match", json={"company_description": "OpenAI"})
 
     assert response.status_code == 422
+
+
+def test_application_brief_endpoint_returns_markdown_and_sections():
+    class FakeBriefService:
+        def generate(self, *, company_description, match_result, grant_detail):
+            assert company_description == "We build AI tools for industrial companies."
+            assert match_result["grant_id"] == "TOPIC-1"
+            assert grant_detail["grant_id"] == "TOPIC-1"
+            return ApplicationBriefResponse(
+                markdown="# Application brief",
+                html="<article>Application brief</article>",
+                sections={
+                    "company_fit_summary": "Strong fit",
+                    "key_requirements": ["Requirement 1"],
+                    "suggested_consortium_partners": ["Partner 1"],
+                    "timeline": ["Week 1"],
+                    "risks_and_gaps": ["Need pilot customer"],
+                },
+            )
+
+    app = create_app()
+    app.state.application_brief_service = FakeBriefService()
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/application-brief",
+        json={
+            "company_description": "We build AI tools for industrial companies.",
+            "match_result": {
+                "grant_id": "TOPIC-1",
+                "title": "AI Grant",
+                "status": "Open",
+                "portal_url": "https://example.com/TOPIC-1",
+                "fit_score": 90,
+                "why_match": "Strong fit",
+                "application_angle": "Lead with deployment outcomes",
+                "keywords": ["ai"],
+            },
+            "grant_detail": {
+                "grant_id": "TOPIC-1",
+                "full_description": "Long description",
+                "eligibility_criteria": ["EU legal entity"],
+                "submission_deadlines": [{"label": "Main deadline", "value": "2026-08-01"}],
+                "expected_outcomes": ["Outcome 1"],
+                "documents": [],
+                "partner_search_available": True,
+                "source": "browser_topic_detail",
+                "fallback_used": False,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["markdown"] == "# Application brief"
+    assert payload["sections"]["company_fit_summary"] == "Strong fit"
+    assert payload["sections"]["key_requirements"] == ["Requirement 1"]
+
+
+def test_application_brief_endpoint_reports_service_failure():
+    class FailingBriefService:
+        def generate(self, **_kwargs):
+            raise RuntimeError("brief generation failed")
+
+    app = create_app()
+    app.state.application_brief_service = FailingBriefService()
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/application-brief",
+        json={
+            "company_description": "We build AI tools for industrial companies.",
+            "match_result": {
+                "grant_id": "TOPIC-1",
+                "title": "AI Grant",
+                "status": "Open",
+                "portal_url": "https://example.com/TOPIC-1",
+                "fit_score": 90,
+                "why_match": "Strong fit",
+                "application_angle": "Lead with deployment outcomes",
+                "keywords": ["ai"],
+            },
+            "grant_detail": {
+                "grant_id": "TOPIC-1",
+                "full_description": "Long description",
+                "eligibility_criteria": ["EU legal entity"],
+                "submission_deadlines": [{"label": "Main deadline", "value": "2026-08-01"}],
+                "expected_outcomes": ["Outcome 1"],
+                "documents": [],
+                "partner_search_available": True,
+                "source": "browser_topic_detail",
+                "fallback_used": False,
+            },
+        },
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "brief generation failed"

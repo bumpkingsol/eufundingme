@@ -11,6 +11,8 @@ from .config import Settings, load_settings
 from .embeddings import EmbeddingService, embedding_shortlist, lexical_shortlist
 from .matcher import MatchService, OpenAIScorer
 from .models import (
+    ApplicationBriefRequest,
+    ApplicationBriefResponse,
     HealthResponse,
     IndexStatus,
     MatchRequest,
@@ -194,6 +196,7 @@ def create_app(
             degraded=status.degraded,
             degradation_reasons=status.degradation_reasons,
             snapshot_loaded=status.snapshot_loaded,
+            snapshot_source=status.snapshot_source,
             refresh_in_progress=status.refresh_in_progress,
         )
         if status.matching_available:
@@ -203,7 +206,10 @@ def create_app(
     @app.get("/api/index/status", response_model=IndexStatus)
     def index_status() -> IndexStatus:
         app.state.app_state.ensure_indexing_started()
-        return app.state.app_state.get_status()
+        status = app.state.app_state.get_status()
+        if hasattr(app.state.app_state, "get_index_summary"):
+            return status.model_copy(update={"summary": app.state.app_state.get_index_summary()})
+        return status
 
     @app.post("/api/profile/resolve", response_model=ProfileResolveResponse)
     def profile_resolve(
@@ -253,6 +259,20 @@ def create_app(
             base_degradation_reasons=status.degradation_reasons,
         )
         return match_response.model_copy(update={"request_id": request_id})
+
+    @app.post("/api/application-brief", response_model=ApplicationBriefResponse)
+    def application_brief(payload: ApplicationBriefRequest) -> ApplicationBriefResponse:
+        brief_service = getattr(app.state, "application_brief_service", None)
+        if brief_service is None:
+            raise HTTPException(status_code=503, detail="application brief service unavailable")
+        try:
+            return brief_service.generate(
+                company_description=payload.company_description,
+                match_result=payload.match_result.model_dump(),
+                grant_detail=payload.grant_detail.model_dump(),
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @app.get("/sentry-debug")
     def sentry_debug() -> None:

@@ -123,6 +123,45 @@ body {
   gap: 0.35rem;
 }
 
+.agent-handoff {
+  margin-top: 0.85rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.52);
+}
+
+.agent-handoff-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.agent-handoff-head h2 {
+  margin: 0.2rem 0 0;
+  font-size: 1.1rem;
+}
+
+.agent-handoff .eyebrow {
+  margin-bottom: 0;
+}
+
+.agent-handoff-text {
+  width: 100%;
+  min-height: 17rem;
+  margin-top: 0.75rem;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: rgba(248, 244, 237, 0.94);
+  padding: 1rem;
+  color: var(--ink);
+  font: 0.92rem/1.55 "IBM Plex Sans", sans-serif;
+  white-space: pre-wrap;
+}
+
 .hero-points span,
 .urgency {
   border-radius: 999px;
@@ -510,6 +549,7 @@ button:disabled {
   }
 
   .quick-fill-row,
+  .agent-handoff-head,
   .results-head,
   .result-head,
   .form-row {

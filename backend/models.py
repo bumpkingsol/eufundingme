@@ -115,9 +115,11 @@ class IndexStatus(BaseModel):
     requests_completed: int = 0
     last_progress_at: str | None = None
     snapshot_loaded: bool = False
+    snapshot_source: str | None = None
     snapshot_age_seconds: int | None = None
     refresh_in_progress: bool = False
     refresh_indexed_grants: int = 0
+    summary: "IndexSummary | None" = None
 
 
 class HealthResponse(BaseModel):
@@ -134,6 +136,7 @@ class ReadinessResponse(BaseModel):
     degraded: bool
     degradation_reasons: list[str] = Field(default_factory=list)
     snapshot_loaded: bool = False
+    snapshot_source: str | None = None
     refresh_in_progress: bool = False
 
 
@@ -146,6 +149,57 @@ class ParsedLLMMatch(BaseModel):
 
 class ParsedLLMMatchList(BaseModel):
     matches: list[ParsedLLMMatch]
+
+
+class IndexSummary(BaseModel):
+    total_grants: int
+    programme_count: int
+    total_budget_eur: int
+    total_budget_display: str | None = None
+    closest_deadline: str | None = None
+    closest_deadline_days: int | None = None
+
+
+class GrantDeadline(BaseModel):
+    label: str
+    value: str
+
+
+class GrantDocument(BaseModel):
+    title: str
+    url: str
+
+
+class GrantDetailResponse(BaseModel):
+    grant_id: str
+    full_description: str = ""
+    eligibility_criteria: list[str] = Field(default_factory=list)
+    submission_deadlines: list[dict[str, str]] = Field(default_factory=list)
+    expected_outcomes: list[str] = Field(default_factory=list)
+    documents: list[dict[str, str]] = Field(default_factory=list)
+    partner_search_available: bool | None = None
+    source: str
+    fallback_used: bool = False
+
+
+class ApplicationBriefSections(BaseModel):
+    company_fit_summary: str
+    key_requirements: list[str] = Field(default_factory=list)
+    suggested_consortium_partners: list[str] = Field(default_factory=list)
+    timeline: list[str] = Field(default_factory=list)
+    risks_and_gaps: list[str] = Field(default_factory=list)
+
+
+class ApplicationBriefRequest(BaseModel):
+    company_description: str = Field(min_length=20, max_length=5000)
+    match_result: MatchResult
+    grant_detail: GrantDetailResponse
+
+
+class ApplicationBriefResponse(BaseModel):
+    markdown: str
+    html: str
+    sections: ApplicationBriefSections
 
 
 @dataclass(slots=True)

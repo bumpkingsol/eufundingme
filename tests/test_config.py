@@ -59,3 +59,11 @@ def test_load_settings_uses_hardened_defaults(monkeypatch):
     assert settings.sentry_environment == "development"
     assert settings.sentry_release is None
     assert settings.sentry_send_default_pii is False
+
+
+def test_load_settings_reads_seed_snapshot_override(monkeypatch):
+    monkeypatch.setenv("INDEX_SEED_SNAPSHOT_PATH", "/tmp/demo-seed.json")
+
+    settings = load_settings()
+
+    assert settings.index_seed_snapshot_path == "/tmp/demo-seed.json"

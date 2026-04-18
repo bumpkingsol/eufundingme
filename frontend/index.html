@@ -56,6 +56,30 @@
             <p class="submit-hint">
               Use <code>python -m backend.cli health</code> for agent preflight checks.
             </p>
+
+            <section class="agent-handoff" aria-labelledby="agent-handoff-title">
+              <div class="agent-handoff-head">
+                <div>
+                  <p class="eyebrow">Agent Handoff</p>
+                  <h2 id="agent-handoff-title">Copy Instructions for an External Agent</h2>
+                </div>
+                <button id="agent-handoff-copy" class="secondary-button" type="button">Copy Instructions</button>
+              </div>
+              <p class="submit-hint">
+                Paste this into Telegram or another agent chat so the agent can install, verify, and use the CLI tool on its own.
+              </p>
+              <p class="submit-hint">
+                The copied brief tells the agent to use <code>eufundingme</code>, preserve <code>request_id</code>, and surface
+                <code>INDEX_NOT_READY</code>, <code>MATCH_TIMEOUT</code>, or <code>INTERNAL_ERROR</code> verbatim.
+              </p>
+              <textarea
+                id="agent-handoff-instructions"
+                class="agent-handoff-text"
+                readonly
+                aria-label="Agent handoff instructions"
+              ></textarea>
+              <p id="agent-handoff-status" class="submit-hint">Copy this block and paste it into your agent chat.</p>
+            </section>
           </section>
         </section>
 

@@ -47,6 +47,7 @@ export EC_RETRY_BACKOFF_SECONDS=0.5
 export SHORTLIST_LIMIT=10
 export SENTRY_TRACES_SAMPLE_RATE=0.2
 export INDEX_SNAPSHOT_PATH=.cache/grant-index.json
+export INDEX_SEED_SNAPSHOT_PATH=backend/data/grant-index.seed.json
 export INDEX_SNAPSHOT_MAX_AGE_HOURS=24
 export INDEX_REFRESH_STALL_SECONDS=60
 export DEMO_PROFILES_PATH=...
@@ -64,6 +65,7 @@ uvicorn backend.app:app --reload
 Open [http://127.0.0.1:8000](http://127.0.0.1:8000).
 
 The web UI includes a one-click `Try OpenAI` demo profile for the first search.
+It also includes an `Agent Handoff` panel with a `Copy Instructions` button for pasting a ready-to-run CLI bootstrap brief into an external agent chat.
 
 ## Test
 
@@ -132,6 +134,8 @@ You can pin trace IDs with `--request-id`:
 eufundingme match --description "..." --request-id "agent-run-123"
 ```
 
+The web UI `Agent Handoff` panel is intended for external agent environments and uses the installable `eufundingme` entrypoint as the default path, with `python -m backend.cli ...` as a fallback.
+
 ## API
 
 - `GET /api/health`
@@ -157,8 +161,10 @@ Successful `POST /api/match` responses include a top-level `request_id` alongsid
 - The EC API ignores server-side status filters, so indexing uses call-prefix fan-out and client-side filtering.
 - The app keeps the grant index in memory for speed.
 - The app also persists the last successful completed index to disk and warm-starts from it on the next boot when available.
+- If no runtime snapshot exists, the app falls back to the bundled seed snapshot in `backend/data/grant-index.seed.json` so matching stays available on cold boot while the live refresh runs in the background.
 - By default the crawler runs exhaustively across pages for each prefix. Set `EC_MAX_PAGES_PER_PREFIX` only if you want an explicit crawl cap; capped crawls are reported as degraded coverage.
 - Warm-started runs show `ready_degraded` while a background refresh is in progress. Matching stays available from the saved snapshot, but partial in-progress crawl data is never used for results.
+- Bundled-seed starts also show `ready_degraded`, with `snapshot_source="bundled"` and `bundled_seed_mode` in degradation reasons so operators can distinguish them from runtime snapshot warm starts.
 - `INDEX_SNAPSHOT_MAX_AGE_HOURS` marks saved data as stale for operator visibility, and `INDEX_REFRESH_STALL_SECONDS` adds a `refresh_delayed` degradation signal if live crawl progress stops updating.
 - Known demo companies such as `OpenAI`, `Northvolt`, and `Doctolib` resolve from checked-in profiles.
 - Unknown short company names use OpenAI expansion only when `OPENAI_API_KEY` is configured. Without it, the UI asks for one or two descriptive sentences instead of sending the short name into `/api/match`.
@@ -175,6 +181,21 @@ Successful `POST /api/match` responses include a top-level `request_id` alongsid
 3. Type `Northvolt` or `Doctolib` to show a contrasting sector.
 4. For a live audience test, type a company name directly.
 5. If the name is known, the app expands it from the saved demo profiles. If the name is unknown and OpenAI is configured, the app expands it with AI before matching.
+
+## Seed Snapshot Workflow
+
+1. Run a successful live index locally so `.cache/grant-index.json` contains a fresh runtime snapshot.
+2. Review and validate that snapshot payload.
+3. Copy it into `backend/data/grant-index.seed.json`.
+4. Commit the updated seed snapshot before the demo or release.
+
+## Agent Handoff
+
+Use the status APIs and CLI JSON mode to verify whether the app is serving a runtime snapshot, the bundled seed snapshot, or a fully fresh live index before the demo.
+
+## Copy Instructions
+
+When refreshing the bundled seed, copy the validated runtime snapshot JSON into `backend/data/grant-index.seed.json` exactly, then commit that file with the accompanying README update if workflow details changed.
 
 ## License
 

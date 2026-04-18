@@ -8,7 +8,7 @@ def test_status_command_outputs_phase():
 
     assert code == 0
     payload = json.loads(stdout)
-    assert payload["phase"] in {"building", "ready", "error"}
+    assert payload["phase"] in {"building", "ready", "ready_degraded", "error"}
 
 
 def test_index_command_is_idempotent():
@@ -20,5 +20,5 @@ def test_index_command_is_idempotent():
 
     assert code1 == 0
     assert code2 == 0
-    assert payload1["phase"] in {"building", "ready", "error"}
-    assert payload2["phase"] in {"building", "ready", "error"}
+    assert payload1["phase"] in {"building", "ready", "ready_degraded", "error"}
+    assert payload2["phase"] in {"building", "ready", "ready_degraded", "error"}

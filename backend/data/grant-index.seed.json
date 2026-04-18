@@ -1,0 +1,64 @@
+{
+  "grants": [
+    {
+      "id": "HORIZON-CL4-2026-01-DEMO",
+      "title": "Trustworthy Foundation Models for European Industry",
+      "status": "Open",
+      "portal_url": "https://example.com/HORIZON-CL4-2026-01-DEMO",
+      "deadline": "2026-08-01",
+      "deadline_at": "2026-08-01T17:00:00+00:00",
+      "budget_display": "EUR 8.0M",
+      "budget_amount_eur": 8000000,
+      "keywords": [
+        "ai",
+        "foundation models",
+        "safety",
+        "enterprise"
+      ],
+      "framework_programme": "Horizon Europe",
+      "programme_division": "Cluster 4",
+      "description": "Support trustworthy foundation model research, evaluation, and deployment for strategic European industrial use cases.",
+      "call_identifier": "HORIZON-CL4-2026-01",
+      "action_type": "RIA",
+      "search_text": "trustworthy foundation model research evaluation deployment european industry ai safety enterprise horizon europe cluster 4"
+    },
+    {
+      "id": "DIGITAL-2026-CYBER-DEMO",
+      "title": "Responsible AI Security and Resilience for Critical Infrastructure",
+      "status": "Open",
+      "portal_url": "https://example.com/DIGITAL-2026-CYBER-DEMO",
+      "deadline": "2026-09-15",
+      "deadline_at": "2026-09-15T17:00:00+00:00",
+      "budget_display": "EUR 5.5M",
+      "budget_amount_eur": 5500000,
+      "keywords": [
+        "cybersecurity",
+        "ai safety",
+        "critical infrastructure",
+        "resilience"
+      ],
+      "framework_programme": "Digital Europe",
+      "programme_division": "Cybersecurity",
+      "description": "Advance secure deployment of AI systems in critical infrastructure with emphasis on resilience, monitoring, and trustworthy operations.",
+      "call_identifier": "DIGITAL-2026-CYBER",
+      "action_type": "IA",
+      "search_text": "secure deployment ai systems critical infrastructure resilience monitoring trustworthy operations cybersecurity digital europe"
+    }
+  ],
+  "embeddings": {},
+  "status_payload": {
+    "phase": "ready",
+    "message": "Index ready",
+    "indexed_grants": 2,
+    "scanned_prefixes": 2,
+    "total_prefixes": 2,
+    "failed_prefixes": 0,
+    "truncated_prefixes": 0,
+    "embeddings_ready": false,
+    "degraded": false,
+    "coverage_complete": true,
+    "matching_available": true,
+    "degradation_reasons": []
+  },
+  "written_at": "2026-04-18T10:00:00+00:00"
+}

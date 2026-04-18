@@ -19,6 +19,12 @@ Autonomous agents require:
 
 ## Implemented Behavior
 
+### 0) UI handoff for external agents
+
+- The web UI now exposes an `Agent Handoff` block in the hero area.
+- It includes a `Copy Instructions` action that copies a ready-to-paste bootstrap brief for external agents.
+- The copied instructions tell the agent how to install, verify, and use the CLI tool autonomously, with `eufundingme` as the preferred path and `python -m backend.cli ...` as the fallback.
+
 ### 1) Request ID generation and propagation
 
 Shared utility:

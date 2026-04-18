@@ -22,3 +22,6 @@ eufundingme = "backend.cli:main"
 
 [tool.setuptools]
 packages = ["backend"]
+
+[tool.setuptools.package-data]
+backend = ["data/*.json"]

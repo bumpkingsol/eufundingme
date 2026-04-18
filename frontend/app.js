@@ -8,6 +8,9 @@ const form = document.querySelector("#match-form");
 const descriptionInput = document.querySelector("#company-description");
 const matchButton = document.querySelector("#match-button");
 const quickFillOpenAIButton = document.querySelector("#quick-fill-openai");
+const agentHandoffCopyButton = document.querySelector("#agent-handoff-copy");
+const agentHandoffStatus = document.querySelector("#agent-handoff-status");
+const agentHandoffInstructions = document.querySelector("#agent-handoff-instructions");
 const submitHint = document.querySelector("#submit-hint");
 const statusCopy = document.querySelector("#status-copy");
 const statusBar = document.querySelector("#status-bar");
@@ -35,6 +38,48 @@ let resolveDebounceHandle = null;
 let inFlightPreResolveQuery = "";
 let lastPreResolvedQuery = "";
 let latestResolveToken = 0;
+
+const AGENT_HANDOFF_INSTRUCTIONS = `Act as an autonomous shell agent for this repository.
+
+Goal:
+- Set up and use the eufundingme CLI tool from a fresh environment.
+- Prefer machine-readable JSON output.
+- Preserve and report request_id values in downstream summaries.
+
+Execution order:
+1. Enter the project repository root.
+2. Create and activate the virtual environment:
+   python -m venv .venv
+   . .venv/bin/activate
+3. Install dependencies and the CLI entrypoint:
+   python -m pip install --upgrade pip
+   python -m pip install -r requirements.txt pytest
+   python -m pip install -e .
+4. Verify the tool is installed:
+   eufundingme --help
+5. Run a lightweight preflight check:
+   eufundingme health
+   If that fails, run:
+   python -m backend.cli health
+6. Check index readiness:
+   eufundingme status
+7. If you only have a short company name, optionally expand it first:
+   eufundingme profile --query "<company>"
+8. Run the match command with the full company description:
+   eufundingme match --description "<company description>"
+   Fallback if the installed command is unavailable:
+   python -m backend.cli match --description "<company description>"
+
+Machine contract:
+- Default output is JSON.
+- Successful and error responses include request_id for tracing.
+- Treat INDEX_NOT_READY and MATCH_TIMEOUT as intentional automation signals.
+- Surface INTERNAL_ERROR verbatim if it occurs.
+
+Success criteria:
+- Return the ranked grant results.
+- Include the request_id in your final report.
+- If the command fails, report the exact error code and message verbatim.`;
 
 function escapeHtml(value) {
   return String(value)
@@ -196,6 +241,19 @@ function formatLastProgress(timestamp) {
   return `${formatDuration(diffSeconds)} ago`;
 }
 
+function hydrateAgentHandoff() {
+  agentHandoffInstructions.value = AGENT_HANDOFF_INSTRUCTIONS;
+}
+
+async function copyAgentHandoffInstructions() {
+  try {
+    await navigator.clipboard.writeText(agentHandoffInstructions.value);
+    agentHandoffStatus.textContent = "Instructions copied. Paste them into your agent chat.";
+  } catch (_error) {
+    agentHandoffStatus.textContent = "Copy failed. Select the instructions manually and paste them into your agent chat.";
+  }
+}
+
 function humanizeReasons(reasons) {
   return (reasons || []).map((reason) => reason.replaceAll("_", " "));
 }
@@ -205,6 +263,13 @@ function getStatusCopy(status) {
     return {
       statusMessage: "Starting live EU grant index...",
       submitMessage: "Live indexing starts on page load. Watch the status panel while matching unlocks.",
+    };
+  }
+
+  if (status.snapshot_source === "bundled" && status.refresh_in_progress) {
+    return {
+      statusMessage: "Bundled seed snapshot is live while the background refresh catches up.",
+      submitMessage: "Matching is live from the bundled seed snapshot while the exhaustive live refresh continues.",
     };
   }
 
@@ -353,7 +418,11 @@ function updateStatus(status) {
   statusFailures.textContent = String(failedPrefixes + truncatedPrefixes);
   statusCoverage.textContent = coverageLabel;
   statusEmbeddings.textContent = status.embeddings_ready ? "ready" : "warming up";
-  statusSource.textContent = status.snapshot_loaded ? `saved index (${snapshotAge} old)` : "live crawl";
+  statusSource.textContent = status.snapshot_loaded
+    ? status.snapshot_source === "bundled"
+      ? `bundled seed snapshot (${snapshotAge} old)`
+      : `saved index (${snapshotAge} old)`
+    : "live crawl";
   statusRefresh.textContent = status.refresh_in_progress
     ? status.snapshot_loaded
       ? "refreshing in background"
@@ -365,7 +434,9 @@ function updateStatus(status) {
       : "—";
   statusUpdated.textContent = formatLastProgress(status.last_progress_at);
   statusBar.style.width = `${status.phase === "ready" || status.phase === "ready_degraded" ? 100 : ratio}%`;
-  matchButton.disabled = !matchingAvailable;
+  if (matchButton.textContent !== "Matching…") {
+    matchButton.disabled = false;
+  }
   submitHint.textContent = statusCopyText.submitMessage;
 
   if (status.degraded && status.degradation_reasons?.length) {
@@ -509,7 +580,7 @@ async function submitMatch(event) {
     resultsMeta.textContent = "No results available.";
   } finally {
     matchButton.textContent = "Find Grants";
-    matchButton.disabled = !isMatchingAvailable(latestStatus);
+    matchButton.disabled = false;
   }
 }
 
@@ -528,8 +599,10 @@ descriptionInput.addEventListener("blur", () => {
 });
 
 quickFillOpenAIButton.addEventListener("click", applyQuickFillDemoProfile);
-matchButton.disabled = true;
+agentHandoffCopyButton.addEventListener("click", copyAgentHandoffInstructions);
+matchButton.disabled = false;
 submitHint.textContent = getStatusCopy(null).submitMessage;
 updateDocumentTitle();
+hydrateAgentHandoff();
 form.addEventListener("submit", submitMatch);
 fetchStatus();
