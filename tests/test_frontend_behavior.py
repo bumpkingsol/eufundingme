@@ -115,6 +115,18 @@ const document = {{
   }},
 }};
 
+const consoleErrors = [];
+const consoleWarnings = [];
+const consoleMock = {{
+  ...console,
+  error(...args) {{
+    consoleErrors.push(args);
+  }},
+  warn(...args) {{
+    consoleWarnings.push(args);
+  }},
+}};
+
 const clipboardWrites = [];
 const openedWindows = [];
 const navigator = {{
@@ -214,7 +226,7 @@ async function fetchMock(url, options = {{}}) {{
 }}
 
 const context = {{
-  console,
+  console: consoleMock,
   document,
   fetch: fetchMock,
   navigator,
@@ -970,6 +982,125 @@ if (elements.get("dashboard-total-grants").textContent !== "44 grants found so f
     assert result.returncode == 0, result.stderr
 
 
+def test_frontend_calls_out_lexical_only_mode_as_lower_confidence():
+    script = build_frontend_harness(
+        """
+const status = {
+  phase: "ready_degraded",
+  message: "Index ready with degraded coverage or matching quality",
+  indexed_grants: 44,
+  refresh_indexed_grants: 44,
+  scanned_prefixes: 46,
+  total_prefixes: 46,
+  failed_prefixes: 0,
+  truncated_prefixes: 0,
+  embeddings_ready: false,
+  matching_available: true,
+  coverage_complete: true,
+  degraded: true,
+  degradation_reasons: ["lexical_only_mode"],
+  snapshot_loaded: false,
+  snapshot_source: null,
+  refresh_in_progress: false,
+  summary: {
+    total_grants: 44,
+    programme_count: 8,
+    total_budget_display: "EUR 380M",
+    closest_deadline_days: 3,
+  },
+};
+
+appContext.updateStatus(status);
+
+if (elements.get("status-embeddings").textContent !== "keyword-only") {
+  throw new Error(`Unexpected embeddings label: ${elements.get("status-embeddings").textContent}`);
+}
+if (elements.get("status-degraded").hidden) {
+  throw new Error("Expected degraded banner to be visible");
+}
+if (!elements.get("status-degraded").textContent.includes("Keyword-only matching is active")) {
+  throw new Error(`Unexpected degraded copy: ${elements.get("status-degraded").textContent}`);
+}
+if (!elements.get("submit-hint").textContent.includes("keyword-based")) {
+  throw new Error(`Unexpected submit hint: ${elements.get("submit-hint").textContent}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_describes_bundled_snapshot_as_cached_data():
+    script = build_frontend_harness(
+        """
+const status = {
+  phase: "ready_degraded",
+  message: "Index ready with degraded coverage or matching quality",
+  indexed_grants: 44,
+  refresh_indexed_grants: 44,
+  scanned_prefixes: 46,
+  total_prefixes: 46,
+  failed_prefixes: 0,
+  truncated_prefixes: 0,
+  embeddings_ready: false,
+  matching_available: true,
+  coverage_complete: true,
+  degraded: true,
+  degradation_reasons: ["bundled_seed_mode"],
+  snapshot_loaded: true,
+  snapshot_source: "bundled",
+  snapshot_age_seconds: 120,
+  refresh_in_progress: true,
+  summary: {
+    total_grants: 44,
+    programme_count: 8,
+    total_budget_display: "EUR 380M",
+    closest_deadline_days: 3,
+  },
+};
+
+appContext.updateStatus(status);
+
+if (!elements.get("status-copy").textContent.includes("Running with cached data")) {
+  throw new Error(`Unexpected cached-data status copy: ${elements.get("status-copy").textContent}`);
+}
+if (!elements.get("submit-hint").textContent.includes("Bundled snapshot")) {
+  throw new Error(`Unexpected cached-data submit hint: ${elements.get("submit-hint").textContent}`);
+}
+if (elements.get("status-degraded").textContent.startsWith("Degraded")) {
+  throw new Error(`Expected non-degraded banner copy: ${elements.get("status-degraded").textContent}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_shows_no_reliable_keyword_matches_copy_in_lexical_mode():
+    script = build_frontend_harness(
+        """
+appContext.renderResults([], 44, {
+  degradation_reasons: ["lexical_only_mode"],
+});
+
+if (!resultsEmpty.textContent.includes("No reliable keyword matches yet")) {
+  throw new Error(`Unexpected lexical empty state: ${resultsEmpty.textContent}`);
+}
+if (!resultsMeta.textContent.includes("Keyword-only fallback is active")) {
+  throw new Error(`Unexpected lexical meta copy: ${resultsMeta.textContent}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_frontend_fetches_grant_details_and_caches_repeat_expansions():
     script = build_frontend_harness(
         """
@@ -1119,6 +1250,22 @@ const briefCalls = fetchCalls.filter((call) => call.url === "/api/application-br
 if (briefCalls.length !== 1) {
   throw new Error(`Expected one brief request, got ${briefCalls.length}`);
 }
+const briefPayload = JSON.parse(briefCalls[0].options.body);
+if (briefPayload.company_description !== "We build AI tools for industrial companies.") {
+  throw new Error(`Unexpected company description: ${briefPayload.company_description}`);
+}
+if (briefPayload.match_result.portal_url !== "https://example.com/TOPIC-1") {
+  throw new Error(`Expected portal_url in match_result: ${JSON.stringify(briefPayload.match_result)}`);
+}
+if (briefPayload.match_result.why_match !== "Strong fit") {
+  throw new Error(`Expected why_match in match_result: ${JSON.stringify(briefPayload.match_result)}`);
+}
+if (briefPayload.match_result.application_angle !== "Lead with deployment") {
+  throw new Error(`Expected application_angle in match_result: ${JSON.stringify(briefPayload.match_result)}`);
+}
+if (briefPayload.grant_detail.full_description !== "Detailed description") {
+  throw new Error(`Expected grant_detail payload: ${JSON.stringify(briefPayload.grant_detail)}`);
+}
 if (openedWindows.length !== 1) {
   throw new Error(`Expected one export window, got ${openedWindows.length}`);
 }
@@ -1127,6 +1274,77 @@ if (!openedWindows[0].html.includes("Brief")) {
 }
 if (!openedWindows[0].printCalled) {
   throw new Error("Expected print() to be called for export");
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_logs_resolution_failures_before_fallback():
+    script = build_frontend_harness(
+        """
+queueProfileResponse(async () => {
+  throw new Error("resolver down");
+});
+
+descriptionInput.value = "OpenAI";
+await descriptionInput.dispatch("input");
+await flushTimers(1);
+await flushTimers(2);
+
+if (consoleErrors.length !== 1) {
+  throw new Error(`Expected one console.error call, got ${consoleErrors.length}`);
+}
+if (!String(consoleErrors[0][0]).includes("resolver down")) {
+  throw new Error(`Unexpected logged error: ${consoleErrors[0][0]}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_logs_grant_detail_failures_before_fallback():
+    script = build_frontend_harness(
+        """
+appContext.renderResults([
+  {
+    grant_id: "TOPIC-1",
+    title: "AI Grant",
+    status: "Open",
+    deadline: "2026-08-01",
+    days_left: 20,
+    budget: "EUR 5M",
+    portal_url: "https://example.com/TOPIC-1",
+    fit_score: 90,
+    why_match: "Strong fit",
+    application_angle: "Lead with deployment",
+    framework_programme: "Horizon Europe",
+    programme_division: "Cluster 4",
+    keywords: ["ai"],
+  }
+], 42);
+
+detailResponses.set("/api/grants/TOPIC-1", {
+  ok: false,
+  json: async () => ({})
+});
+
+await appContext.toggleGrantDetails("TOPIC-1");
+
+if (consoleErrors.length !== 1) {
+  throw new Error(`Expected one console.error call, got ${consoleErrors.length}`);
+}
+if (!String(consoleErrors[0][0]).includes("Could not load topic detail")) {
+  throw new Error(`Unexpected logged error: ${consoleErrors[0][0]}`);
+}
+if (!resultsList.innerHTML.includes("Not available")) {
+  throw new Error(`Expected fallback details to render: ${resultsList.innerHTML}`);
 }
 """
     )

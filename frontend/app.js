@@ -53,6 +53,7 @@ let lastPreResolvedQuery = "";
 let latestResolveToken = 0;
 let currentJourneyRequestId = null;
 let currentJourneySeed = null;
+let latestMatchMeta = null;
 const resultsById = new Map();
 const grantDetailsById = new Map();
 const loadingGrantIds = new Set();
@@ -152,7 +153,8 @@ async function copyAgentHandoffInstructions() {
   try {
     await navigator.clipboard.writeText(agentHandoffInstructions.value);
     agentHandoffStatus.textContent = "Instructions copied. Paste them into your agent chat.";
-  } catch (_error) {
+  } catch (error) {
+    console.error(error);
     agentHandoffStatus.textContent =
       "Copy failed. Select the instructions manually and paste them into your agent chat.";
     agentHandoffInstructions.focus();
@@ -171,6 +173,7 @@ function hideResolutionBanner() {
 }
 
 function showMatchFeedback(message) {
+  latestMatchMeta = null;
   showResolutionBanner(message);
   updateDocumentTitle();
   resultsEmpty.hidden = false;
@@ -255,6 +258,18 @@ function humanizeReasons(reasons) {
   return (reasons || []).map((reason) => reason.replaceAll("_", " "));
 }
 
+function hasReason(reasons, reason) {
+  return Array.isArray(reasons) && reasons.includes(reason);
+}
+
+function isLexicalOnlyMode(reasons) {
+  return hasReason(reasons, "lexical_only_mode");
+}
+
+function isBundledSeedMode(reasons) {
+  return hasReason(reasons, "bundled_seed_mode");
+}
+
 function getStatusCopy(status) {
   if (!status) {
     return {
@@ -265,16 +280,16 @@ function getStatusCopy(status) {
 
   if (status.snapshot_source === "bundled" && status.refresh_in_progress) {
     return {
-      statusMessage: "Bundled seed snapshot is live while the background refresh catches up.",
+      statusMessage: "Running with cached data while the live refresh catches up.",
       submitMessage:
-        "Matching is live from the bundled seed snapshot while the exhaustive live refresh continues.",
+        "Bundled snapshot is live for the demo while the exhaustive live refresh continues in the background.",
     };
   }
 
   if (status.snapshot_loaded && status.refresh_in_progress) {
     return {
-      statusMessage: "Saved index is live while the background refresh catches up.",
-      submitMessage: "Matching is live from the saved index while the exhaustive live refresh continues.",
+      statusMessage: "Running with cached data while the live refresh catches up.",
+      submitMessage: "Cached results are live while the exhaustive live refresh continues in the background.",
     };
   }
 
@@ -286,6 +301,13 @@ function getStatusCopy(status) {
   }
 
   if ((status.phase === "ready" || status.phase === "ready_degraded") && status.matching_available) {
+    if (isLexicalOnlyMode(status.degradation_reasons)) {
+      return {
+        statusMessage: "Index ready in keyword-only fallback mode.",
+        submitMessage:
+          "OpenAI is unavailable, so matching is keyword-based and lower confidence until AI features are enabled.",
+      };
+    }
     return {
       statusMessage: "Index ready - matching is now live.",
       submitMessage: "Matching is live. Short names like OpenAI auto-expand into full demo profiles.",
@@ -413,8 +435,9 @@ function renderGrantDetail(result) {
   `;
 }
 
-function renderResults(results, indexedGrants) {
+function renderResults(results, indexedGrants, matchMeta = latestMatchMeta) {
   latestResults = results;
+  latestMatchMeta = matchMeta || null;
   resultsById.clear();
   for (const result of results) {
     resultsById.set(result.grant_id, result);
@@ -426,14 +449,22 @@ function renderResults(results, indexedGrants) {
     updateDocumentTitle();
     resultsList.innerHTML = "";
     resultsEmpty.hidden = false;
-    resultsEmpty.textContent = DEFAULT_EMPTY_STATE;
-    resultsMeta.textContent = `Indexed ${indexedGrants} live grants. No strong matches yet.`;
+    if (isLexicalOnlyMode(matchMeta?.degradation_reasons)) {
+      resultsEmpty.textContent =
+        "No reliable keyword matches yet. Add more domain-specific capabilities or enable OpenAI-backed matching for higher-confidence results.";
+      resultsMeta.textContent = `Indexed ${indexedGrants} live grants. Keyword-only fallback is active, so weak near-matches are hidden.`;
+    } else {
+      resultsEmpty.textContent = DEFAULT_EMPTY_STATE;
+      resultsMeta.textContent = `Indexed ${indexedGrants} live grants. No strong matches yet.`;
+    }
     return;
   }
 
   updateDocumentTitle(results.length);
   resultsEmpty.hidden = true;
-  resultsMeta.textContent = `Showing ${results.length} best-fit results from ${indexedGrants} indexed grants.`;
+  resultsMeta.textContent = isLexicalOnlyMode(matchMeta?.degradation_reasons)
+    ? `Showing ${results.length} keyword-based results from ${indexedGrants} indexed grants. Treat scores as lower confidence.`
+    : `Showing ${results.length} best-fit results from ${indexedGrants} indexed grants.`;
 
   resultsList.innerHTML = results
     .map((result) => {
@@ -570,7 +601,8 @@ async function maybeResolveCompanyProfile(value, { source = "typing", force = fa
     lastPreResolvedQuery = normalizedQuery;
     showResolutionBanner(`Expanded ${resolution.display_name || "company name"} into a full demo profile.`);
     return resolution.profile;
-  } catch (_error) {
+  } catch (error) {
+    console.error(error);
     if (source === "submit") {
       throw new Error(
         "Could not expand company name automatically. Add one or two sentences about what the company does.",
@@ -621,7 +653,11 @@ function updateStatus(status) {
   statusPrefixes.textContent = `${scannedPrefixes} / ${totalPrefixes}`;
   statusFailures.textContent = String(failedPrefixes + truncatedPrefixes);
   statusCoverage.textContent = coverageLabel;
-  statusEmbeddings.textContent = status.embeddings_ready ? "ready" : "warming up";
+  statusEmbeddings.textContent = isLexicalOnlyMode(status.degradation_reasons)
+    ? "keyword-only"
+    : status.embeddings_ready
+      ? "ready"
+      : "warming up";
   statusSource.textContent = status.snapshot_loaded
     ? status.snapshot_source === "bundled"
       ? `bundled seed snapshot (${snapshotAge} old)`
@@ -644,7 +680,11 @@ function updateStatus(status) {
 
   if (status.degraded && status.degradation_reasons?.length) {
     statusDegraded.hidden = false;
-    statusDegraded.textContent = `Degraded mode: ${humanizeReasons(status.degradation_reasons).join(", ")}.`;
+    statusDegraded.textContent = isLexicalOnlyMode(status.degradation_reasons)
+      ? "Keyword-only matching is active because OpenAI is unavailable. Treat scores as lower confidence and add domain-specific detail for better results."
+      : isBundledSeedMode(status.degradation_reasons)
+        ? "Running with cached data while the live refresh completes in the background."
+      : `Degraded mode: ${humanizeReasons(status.degradation_reasons).join(", ")}.`;
   } else {
     statusDegraded.hidden = true;
     statusDegraded.textContent = "";
@@ -674,6 +714,7 @@ async function fetchStatus() {
     updateStatus(status);
     scheduleStatusPoll(status.phase === "building" || status.refresh_in_progress ? 2500 : 5000);
   } catch (error) {
+    console.error(error);
     consecutiveStatusFailures += 1;
     updateStatus({
       phase: "error",
@@ -793,18 +834,18 @@ function normalizeBool(value) {
 async function toggleGrantDetails(grantId) {
   if (expandedGrantIds.has(grantId)) {
     expandedGrantIds.delete(grantId);
-    renderResults(latestResults, latestStatus?.indexed_grants || latestResults.length);
+    renderResults(latestResults, latestStatus?.indexed_grants || latestResults.length, latestMatchMeta);
     return;
   }
 
   expandedGrantIds.add(grantId);
   if (grantDetailsById.has(grantId)) {
-    renderResults(latestResults, latestStatus?.indexed_grants || latestResults.length);
+    renderResults(latestResults, latestStatus?.indexed_grants || latestResults.length, latestMatchMeta);
     return;
   }
 
   loadingGrantIds.add(grantId);
-  renderResults(latestResults, latestStatus?.indexed_grants || latestResults.length);
+  renderResults(latestResults, latestStatus?.indexed_grants || latestResults.length, latestMatchMeta);
 
   try {
     const response = await fetch(`/api/grants/${encodeURIComponent(grantId)}`);
@@ -813,11 +854,12 @@ async function toggleGrantDetails(grantId) {
     }
     const payload = await response.json();
     grantDetailsById.set(grantId, normalizeGrantDetailResponse(payload, grantId));
-  } catch (_error) {
+  } catch (error) {
+    console.error(error);
     grantDetailsById.set(grantId, buildFallbackGrantDetail(grantId));
   } finally {
     loadingGrantIds.delete(grantId);
-    renderResults(latestResults, latestStatus?.indexed_grants || latestResults.length);
+    renderResults(latestResults, latestStatus?.indexed_grants || latestResults.length, latestMatchMeta);
   }
 }
 
@@ -873,7 +915,10 @@ async function exportApplicationBrief(grantId) {
     }),
   });
   if (!response.ok) {
-    const errorPayload = await response.json().catch(() => ({}));
+    const errorPayload = await response.json().catch((error) => {
+      console.error(error);
+      return {};
+    });
     throw new Error(getValidationMessage(errorPayload) || "Could not export application brief.");
   }
 
@@ -894,6 +939,7 @@ async function applyQuickFillDemoProfile() {
     if (!resolvedProfile) {
       throw new Error("Could not load the OpenAI demo profile.");
     }
+    latestMatchMeta = null;
     resultsEmpty.hidden = false;
     resultsEmpty.textContent = DEFAULT_EMPTY_STATE;
     resultsList.innerHTML = "";
@@ -901,6 +947,7 @@ async function applyQuickFillDemoProfile() {
     updateDocumentTitle();
     descriptionInput.focus();
   } catch (error) {
+    console.error(error);
     showResolutionBanner(error.message || "Could not load the OpenAI demo profile.");
   } finally {
     quickFillOpenAIButton.disabled = false;
@@ -950,15 +997,19 @@ async function submitMatch(event) {
     });
 
     if (!response.ok) {
-      const errorPayload = await response.json().catch(() => ({}));
+      const errorPayload = await response.json().catch((error) => {
+        console.error(error);
+        return {};
+      });
       const errorMessage =
         getValidationMessage(errorPayload) || "Matching failed. Try again after the index finishes building.";
       throw new Error(errorMessage);
     }
 
     const payload = await response.json();
-    renderResults(payload.results || [], payload.indexed_grants || 0);
+    renderResults(payload.results || [], payload.indexed_grants || 0, payload);
   } catch (error) {
+    console.error(error);
     showMatchFeedback(error.message || "Matching failed.");
   } finally {
     matchButton.textContent = "Find Grants";

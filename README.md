@@ -21,8 +21,8 @@ Set these before running the app:
 
 ```bash
 export OPENAI_API_KEY=...
-export OPENAI_MATCH_MODEL=gpt-5.4-mini-2026-03-17
-export OPENAI_PROFILE_EXPANSION_MODEL=gpt-5.4-mini-2026-03-17
+export OPENAI_MATCH_MODEL=gpt-5.4-mini
+export OPENAI_PROFILE_EXPANSION_MODEL=gpt-5.4-mini
 export OPENAI_EMBEDDING_MODEL=text-embedding-3-large
 export OPENAI_TIMEOUT_SECONDS=30
 export OPENAI_MAX_RETRIES=2
@@ -67,6 +67,22 @@ Open [http://127.0.0.1:8000](http://127.0.0.1:8000).
 The web UI includes a one-click `Try OpenAI` demo profile for the first search.
 It also includes an `Agent Handoff` panel with a `Copy Instructions` button for pasting a ready-to-run CLI bootstrap brief into an external agent chat.
 
+## Screenshots
+
+Captured from the local app running on the bundled snapshot in lexical fallback mode.
+
+### Home
+
+![EU Grant Matcher home screen](docs/images/grant-matcher-home.png)
+
+### Demo Profile
+
+![OpenAI demo profile loaded in EU Grant Matcher](docs/images/grant-matcher-demo-profile.png)
+
+### Ranked Results
+
+![Ranked grant matches for the OpenAI demo profile](docs/images/grant-matcher-results.png)
+
 ## Test
 
 Use `python -m pytest` from the project root.
@@ -74,6 +90,12 @@ Use `python -m pytest` from the project root.
 ```bash
 . .venv/bin/activate
 python -m pytest tests -q
+```
+
+If you have a real OpenAI key and want to verify the full AI path before the demo:
+
+```bash
+OPENAI_LIVE_SMOKE=1 python -m pytest tests/test_openai_live_smoke.py -q
 ```
 
 ## CLI
@@ -141,6 +163,7 @@ The web UI `Agent Handoff` panel is intended for external agent environments and
 - `GET /api/health`
 - `GET /api/ready`
 - `GET /api/index/status`
+- `GET /api/grants/{topic_id}`
 - `POST /api/profile/resolve`
 - `POST /api/match`
 - `POST /api/application-brief`
@@ -169,11 +192,11 @@ Successful `POST /api/match` responses include a top-level `request_id` alongsid
 - `INDEX_SNAPSHOT_MAX_AGE_HOURS` marks saved data as stale for operator visibility, and `INDEX_REFRESH_STALL_SECONDS` adds a `refresh_delayed` degradation signal if live crawl progress stops updating.
 - Known demo companies such as `OpenAI`, `Northvolt`, and `Doctolib` resolve from checked-in profiles.
 - Unknown short company names use OpenAI expansion only when `OPENAI_API_KEY` is configured. Without it, the UI asks for one or two descriptive sentences instead of sending the short name into `/api/match`.
-- The backend uses pinned OpenAI model snapshots for stable production behavior; override them with env vars if needed.
+- The backend defaults to the stable `gpt-5.4-mini` model alias for scoring, profile expansion, and application briefs; override it with env vars if your key is pinned to a different allowed model.
 - Sentry captures backend failures, OpenAI calls, and backend traces for the core API flows. This repo intentionally does not add browser-side Sentry instrumentation.
 - Browser-driven flows propagate a per-journey `X-Request-ID` across `profile/resolve`, `match`, and `application-brief` so backend traces can be correlated end-to-end.
 - Match telemetry reports embedding availability and whether the request actually used embedding shortlist versus lexical fallback; it does not report a cache hit rate because there is no request-level embedding cache.
-- If `OPENAI_API_KEY` is not set, the app stays available in lexical-only mode and reports degraded matching quality.
+- If `OPENAI_API_KEY` is not set, the app stays available in lexical-only mode and reports degraded matching quality. In that mode the UI calls out that scores are keyword-based and lower confidence.
 - If embeddings or AI scoring fail at runtime, the app falls back to lexical ranking and marks the match/index state as degraded.
 - If `SENTRY_DSN` is not set, the app still runs but no Sentry monitoring is emitted.
 
