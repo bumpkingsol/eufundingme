@@ -381,6 +381,38 @@ function isBundledSeedMode(reasons) {
   return hasReason(reasons, "bundled_seed_mode");
 }
 
+function hasConfiguredAiFeatures(status) {
+  return Boolean(status?.embeddings_available || status?.ai_scoring_available);
+}
+
+function getLexicalFallbackCopy(status) {
+  if (hasConfiguredAiFeatures(status) && status?.embeddings_ready === false) {
+    return {
+      submitMessage:
+        "OpenAI is configured, but embeddings are not ready for the active corpus yet, so matching is currently keyword-based and lower confidence.",
+      degradedMessage:
+        "Keyword-only matching is active because embeddings are not ready for the active corpus. Treat scores as lower confidence and add domain-specific detail for better results.",
+      emptyStateCopy:
+        "Lexical fallback is active because embeddings are not ready for the active corpus, so the matcher is suppressing weak near-matches instead of showing misleading results.",
+      emptyStateMeta: "Lexical fallback is active because embeddings are not ready for the active corpus, so weak near-matches are hidden.",
+      emptyStateBullet:
+        "Lexical fallback is active because embeddings are not ready for the active corpus, so weaker near-matches are intentionally hidden.",
+    };
+  }
+
+  return {
+    submitMessage:
+      "OpenAI is unavailable, so matching is keyword-based and lower confidence until AI features are enabled.",
+    degradedMessage:
+      "Keyword-only matching is active because OpenAI is unavailable. Treat scores as lower confidence and add domain-specific detail for better results.",
+    emptyStateCopy:
+      "Lexical fallback is active because OpenAI is unavailable, so the matcher is suppressing weak near-matches instead of showing misleading results.",
+    emptyStateMeta: "Lexical fallback is active because OpenAI is unavailable, so weak near-matches are hidden.",
+    emptyStateBullet:
+      "Lexical fallback is active because OpenAI is unavailable, so weaker near-matches are intentionally hidden.",
+  };
+}
+
 function getStatusCopy(status) {
   if (!status) {
     return {
@@ -421,10 +453,10 @@ function getStatusCopy(status) {
 
   if ((status.phase === "ready" || status.phase === "ready_degraded") && status.matching_available) {
     if (isLexicalOnlyMode(status.degradation_reasons)) {
+      const lexicalCopy = getLexicalFallbackCopy(status);
       return {
         statusMessage: "Index ready in keyword-only fallback mode.",
-        submitMessage:
-          "OpenAI is unavailable, so matching is keyword-based and lower confidence until AI features are enabled.",
+        submitMessage: lexicalCopy.submitMessage,
       };
     }
     return {
@@ -583,13 +615,14 @@ function renderResults(results, indexedGrants, matchMeta = latestMatchMeta) {
   }
 
   if (!results.length) {
+    const lexicalCopy = getLexicalFallbackCopy(matchMeta);
     comparisonGrantIds.length = 0;
     renderComparisonPanel();
     updateDocumentTitle();
     const zeroResultsBullets = isLexicalOnlyMode(matchMeta?.degradation_reasons)
       ? [
           "Add sector-specific terms, target markets, and expected project outcomes.",
-          "Keyword-only fallback is active, so weaker near-matches are intentionally hidden.",
+          lexicalCopy.emptyStateBullet,
         ]
       : [
           "Add your sector, growth stage or TRL, intended EU geography, and partnership needs.",
@@ -600,10 +633,10 @@ function renderResults(results, indexedGrants, matchMeta = latestMatchMeta) {
       showResultsEmptyState({
         variant: "zero",
         title: "No reliable keyword matches yet",
-        copy: "Keyword-only fallback is active, so the matcher is suppressing weak near-matches instead of showing misleading results.",
+        copy: lexicalCopy.emptyStateCopy,
         bullets: zeroResultsBullets,
       });
-      resultsMeta.textContent = `Indexed ${indexedGrants} live grants. Keyword-only fallback is active, so weak near-matches are hidden.`;
+      resultsMeta.textContent = `Indexed ${indexedGrants} live grants. ${lexicalCopy.emptyStateMeta}`;
     } else {
       showResultsEmptyState({
         variant: "zero",
@@ -890,7 +923,7 @@ function updateStatus(status) {
   if (status.degraded && status.degradation_reasons?.length) {
     statusDegraded.hidden = false;
     statusDegraded.textContent = isLexicalOnlyMode(status.degradation_reasons)
-      ? "Keyword-only matching is active because OpenAI is unavailable. Treat scores as lower confidence and add domain-specific detail for better results."
+      ? getLexicalFallbackCopy(status).degradedMessage
       : isBundledSeedMode(status.degradation_reasons)
         ? "Running with the cached corpus while a smaller active/open grant refresh completes in the background."
         : `Degraded mode: ${humanizeReasons(status.degradation_reasons).join(", ")}.`;

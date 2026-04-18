@@ -1302,6 +1302,8 @@ const status = {
   failed_prefixes: 0,
   truncated_prefixes: 0,
   embeddings_ready: false,
+  embeddings_available: true,
+  ai_scoring_available: true,
   matching_available: true,
   coverage_complete: true,
   degraded: true,
@@ -1328,7 +1330,7 @@ if (elements.get("status-degraded").hidden) {
 if (!elements.get("status-degraded").textContent.includes("Keyword-only matching is active")) {
   throw new Error(`Unexpected degraded copy: ${elements.get("status-degraded").textContent}`);
 }
-if (!elements.get("submit-hint").textContent.includes("keyword-based")) {
+if (!elements.get("submit-hint").textContent.includes("embeddings are not ready")) {
   throw new Error(`Unexpected submit hint: ${elements.get("submit-hint").textContent}`);
 }
 """
@@ -1439,14 +1441,78 @@ def test_frontend_shows_no_reliable_keyword_matches_copy_in_lexical_mode():
     script = build_frontend_harness(
         """
 appContext.renderResults([], 44, {
+  embeddings_available: true,
+  ai_scoring_available: true,
+  embeddings_ready: false,
   degradation_reasons: ["lexical_only_mode"],
 });
 
 if (!resultsEmpty.textContent.includes("No reliable keyword matches yet")) {
   throw new Error(`Unexpected lexical empty state: ${resultsEmpty.textContent}`);
 }
-if (!resultsMeta.textContent.includes("Keyword-only fallback is active")) {
+if (!resultsEmpty.textContent.includes("embeddings are not ready for the active corpus")) {
+  throw new Error(`Unexpected lexical explanation: ${resultsEmpty.textContent}`);
+}
+if (!resultsMeta.textContent.includes("Lexical fallback is active")) {
   throw new Error(`Unexpected lexical meta copy: ${resultsMeta.textContent}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_distinguishes_configured_openai_from_true_unavailability_in_lexical_mode():
+    script = build_frontend_harness(
+        """
+const configuredStatus = {
+  phase: "ready_degraded",
+  message: "Index ready with degraded coverage or matching quality",
+  indexed_grants: 44,
+  refresh_indexed_grants: 44,
+  scanned_prefixes: 46,
+  total_prefixes: 46,
+  failed_prefixes: 0,
+  truncated_prefixes: 0,
+  embeddings_ready: false,
+  embeddings_available: true,
+  ai_scoring_available: true,
+  matching_available: true,
+  coverage_complete: true,
+  degraded: true,
+  degradation_reasons: ["lexical_only_mode"],
+  snapshot_loaded: true,
+  snapshot_source: "bundled",
+  refresh_in_progress: false,
+  summary: {
+    total_grants: 44,
+    programme_count: 8,
+    total_budget_display: "EUR 380M",
+    closest_deadline_days: 3,
+  },
+};
+
+appContext.updateStatus(configuredStatus);
+
+if (!elements.get("submit-hint").textContent.includes("OpenAI is configured")) {
+  throw new Error(`Expected configured OpenAI hint, got: ${elements.get("submit-hint").textContent}`);
+}
+if (elements.get("submit-hint").textContent.includes("OpenAI is unavailable")) {
+  throw new Error(`Configured OpenAI was described as unavailable: ${elements.get("submit-hint").textContent}`);
+}
+
+const unavailableStatus = {
+  ...configuredStatus,
+  embeddings_available: false,
+  ai_scoring_available: false,
+};
+
+appContext.updateStatus(unavailableStatus);
+
+if (!elements.get("submit-hint").textContent.includes("OpenAI is unavailable")) {
+  throw new Error(`Expected unavailable OpenAI hint, got: ${elements.get("submit-hint").textContent}`);
 }
 """
     )
