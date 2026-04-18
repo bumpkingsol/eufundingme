@@ -10,9 +10,14 @@ from .config import Settings
 from .ec_client import ECSearchClient
 from .embeddings import EmbeddingService, build_grant_embeddings
 from .indexer import CALL_PREFIXES, build_grant_index
-from .models import GrantRecord, IndexStatus
+from .models import GrantRecord, IndexBuildProgress, IndexStatus
+from .snapshot_store import IndexSnapshotStore, grant_from_snapshot_payload
 
 logger = logging.getLogger(__name__)
+
+
+def _dedupe_reasons(reasons: list[str]) -> list[str]:
+    return list(dict.fromkeys(reason for reason in reasons if reason))
 
 
 class AppState:
@@ -32,10 +37,14 @@ class AppState:
         )
         self.embedding_service = embedding_service
         self.prefixes = prefixes or list(CALL_PREFIXES)
+        self.snapshot_store = IndexSnapshotStore(settings.index_snapshot_path)
         self._lock = Lock()
         self._thread: Thread | None = None
         self._grants: list[GrantRecord] = []
         self._grant_embeddings: dict[str, list[float]] = {}
+        self._snapshot_loaded = False
+        self._snapshot_written_at: datetime | None = None
+        self._indexing_started_once = False
         self._status = IndexStatus(
             phase="idle",
             message="Index not started",
@@ -43,35 +52,119 @@ class AppState:
             coverage_complete=False,
             matching_available=False,
         )
+        self._load_snapshot()
+
+    def _load_snapshot(self) -> None:
+        snapshot = self.snapshot_store.load()
+        if snapshot is None:
+            return
+
+        grants = [grant_from_snapshot_payload(payload) for payload in snapshot.grants]
+        if not grants:
+            return
+
+        try:
+            written_at = datetime.fromisoformat(snapshot.written_at)
+        except ValueError:
+            written_at = datetime.now(timezone.utc)
+
+        status_payload = dict(snapshot.status_payload)
+        base_status = IndexStatus.model_validate(status_payload)
+        reasons = _dedupe_reasons([*base_status.degradation_reasons, "stale_snapshot_mode"])
+
+        self._grants = grants
+        self._grant_embeddings = dict(snapshot.embeddings)
+        self._snapshot_loaded = True
+        self._snapshot_written_at = written_at
+        self._status = IndexStatus(
+            phase="ready_degraded",
+            message="Using saved index while live refresh runs",
+            indexed_grants=len(grants),
+            scanned_prefixes=0,
+            total_prefixes=len(self.prefixes),
+            failed_prefixes=0,
+            truncated_prefixes=0,
+            embeddings_ready=base_status.embeddings_ready,
+            degraded=True,
+            coverage_complete=False,
+            matching_available=True,
+            degradation_reasons=reasons,
+            started_at=None,
+            finished_at=written_at.isoformat(),
+            snapshot_loaded=True,
+            snapshot_age_seconds=self._snapshot_age_seconds(reference_time=datetime.now(timezone.utc)),
+            refresh_in_progress=False,
+        )
 
     def ensure_indexing_started(self) -> None:
         with self._lock:
-            if self._status.phase in {"ready", "ready_degraded"}:
-                return
             if self._thread is not None and self._thread.is_alive():
+                return
+            if self._indexing_started_once:
+                return
+            if (
+                not self._snapshot_loaded
+                and self._status.phase in {"ready", "ready_degraded"}
+                and not self._status.refresh_in_progress
+            ):
                 return
 
             started_at = datetime.now(timezone.utc).isoformat()
-            self._status = IndexStatus(
-                phase="building",
-                message="Indexing live grants",
-                indexed_grants=len(self._grants),
-                scanned_prefixes=0,
-                total_prefixes=len(self.prefixes),
-                failed_prefixes=0,
-                truncated_prefixes=0,
-                embeddings_ready=False,
-                degraded=False,
-                coverage_complete=False,
-                matching_available=False,
-                degradation_reasons=[],
-                started_at=started_at,
-            )
+            if self._snapshot_loaded and self._grants:
+                self._status = self._status.model_copy(
+                    update={
+                        "phase": "ready_degraded",
+                        "message": "Using saved index while live refresh runs",
+                        "degraded": True,
+                        "matching_available": True,
+                        "coverage_complete": False,
+                        "degradation_reasons": _dedupe_reasons(
+                            [*self._status.degradation_reasons, "stale_snapshot_mode"]
+                        ),
+                        "started_at": started_at,
+                        "finished_at": self._status.finished_at,
+                        "current_prefix": None,
+                        "current_page": None,
+                        "pages_fetched": 0,
+                        "requests_completed": 0,
+                        "last_progress_at": None,
+                        "snapshot_loaded": True,
+                        "snapshot_age_seconds": self._snapshot_age_seconds(),
+                        "refresh_in_progress": True,
+                        "refresh_indexed_grants": 0,
+                    }
+                )
+            else:
+                self._status = IndexStatus(
+                    phase="building",
+                    message="Indexing live grants",
+                    indexed_grants=0,
+                    scanned_prefixes=0,
+                    total_prefixes=len(self.prefixes),
+                    failed_prefixes=0,
+                    truncated_prefixes=0,
+                    embeddings_ready=False,
+                    degraded=False,
+                    coverage_complete=False,
+                    matching_available=False,
+                    degradation_reasons=[],
+                    started_at=started_at,
+                    current_prefix=None,
+                    current_page=None,
+                    pages_fetched=0,
+                    requests_completed=0,
+                    last_progress_at=None,
+                    snapshot_loaded=False,
+                    snapshot_age_seconds=None,
+                    refresh_in_progress=True,
+                    refresh_indexed_grants=0,
+                )
+            self._indexing_started_once = True
             self._thread = Thread(target=self._build_index, daemon=True)
             self._thread.start()
 
     def _build_index(self) -> None:
-        started_at = datetime.now(timezone.utc).isoformat()
+        started_at = self.get_status().started_at or datetime.now(timezone.utc).isoformat()
         try:
             grants, build_details = build_grant_index(
                 client=self.client,
@@ -102,77 +195,192 @@ class AppState:
                 if "lexical_only_mode" not in degradation_reasons:
                     degradation_reasons.append("lexical_only_mode")
 
-            finished_at = datetime.now(timezone.utc).isoformat()
+            finished_at = datetime.now(timezone.utc)
+            degradation_reasons = _dedupe_reasons(degradation_reasons)
+            if self._snapshot_loaded and self._grants and not grants and build_details.failed_prefixes > 0:
+                with self._lock:
+                    reasons = _dedupe_reasons(
+                        [*self._status.degradation_reasons, *degradation_reasons, "stale_snapshot_mode"]
+                    )
+                    self._status = self._status.model_copy(
+                        update={
+                            "phase": "ready_degraded",
+                            "message": "Using saved index while live refresh returned no usable data",
+                            "degraded": True,
+                            "matching_available": True,
+                            "failed_prefixes": build_details.failed_prefixes,
+                            "truncated_prefixes": build_details.truncated_prefixes,
+                            "degradation_reasons": reasons,
+                            "finished_at": finished_at.isoformat(),
+                            "refresh_in_progress": False,
+                        }
+                    )
+                return
             degraded = bool(degradation_reasons)
+            fresh_status = IndexStatus(
+                phase="ready_degraded" if degraded else "ready",
+                message="Index ready with degraded coverage or matching quality" if degraded else "Index ready",
+                indexed_grants=len(grants),
+                scanned_prefixes=len(self.prefixes),
+                total_prefixes=len(self.prefixes),
+                failed_prefixes=build_details.failed_prefixes,
+                truncated_prefixes=build_details.truncated_prefixes,
+                embeddings_ready=embeddings_ready,
+                degraded=degraded,
+                coverage_complete=build_details.failed_prefixes == 0 and build_details.truncated_prefixes == 0,
+                matching_available=True,
+                degradation_reasons=degradation_reasons,
+                started_at=started_at,
+                finished_at=finished_at.isoformat(),
+                current_prefix=None,
+                current_page=None,
+                pages_fetched=0,
+                requests_completed=0,
+                last_progress_at=finished_at.isoformat(),
+                snapshot_loaded=False,
+                snapshot_age_seconds=None,
+                refresh_in_progress=False,
+                refresh_indexed_grants=len(grants),
+            )
             with self._lock:
                 self._grants = grants
                 self._grant_embeddings = grant_embeddings
-                self._status = IndexStatus(
-                    phase="ready_degraded" if degraded else "ready",
-                    message="Index ready with degraded coverage or matching quality" if degraded else "Index ready",
-                    indexed_grants=len(grants),
-                    scanned_prefixes=len(self.prefixes),
-                    total_prefixes=len(self.prefixes),
-                    failed_prefixes=build_details.failed_prefixes,
-                    truncated_prefixes=build_details.truncated_prefixes,
-                    embeddings_ready=embeddings_ready,
-                    degraded=degraded,
-                    coverage_complete=build_details.failed_prefixes == 0 and build_details.truncated_prefixes == 0,
-                    matching_available=True,
-                    degradation_reasons=degradation_reasons,
-                    started_at=started_at,
-                    finished_at=finished_at,
-                )
+                self._snapshot_loaded = False
+                self._snapshot_written_at = finished_at
+                self._status = fresh_status
+            self.snapshot_store.save(
+                grants=grants,
+                embeddings=grant_embeddings,
+                status_payload=fresh_status.model_dump(),
+                written_at=finished_at,
+            )
         except Exception as exc:
             finished_at = datetime.now(timezone.utc).isoformat()
             with self._lock:
-                self._status = IndexStatus(
-                    phase="error",
-                    message=f"Indexing failed: {exc}",
-                    indexed_grants=0,
-                    scanned_prefixes=self._status.scanned_prefixes,
-                    total_prefixes=len(self.prefixes),
-                    failed_prefixes=max(1, self._status.failed_prefixes),
-                    truncated_prefixes=self._status.truncated_prefixes,
-                    embeddings_ready=False,
-                    degraded=True,
-                    coverage_complete=False,
-                    matching_available=False,
-                    degradation_reasons=["index_build_failed"],
-                    started_at=started_at,
-                    finished_at=finished_at,
-                )
+                if self._snapshot_loaded and self._grants:
+                    reasons = _dedupe_reasons(
+                        [*self._status.degradation_reasons, "stale_snapshot_mode", "index_build_failed"]
+                    )
+                    self._status = self._status.model_copy(
+                        update={
+                            "phase": "ready_degraded",
+                            "message": "Using saved index while live refresh failed",
+                            "degraded": True,
+                            "matching_available": True,
+                            "degradation_reasons": reasons,
+                            "finished_at": finished_at,
+                            "refresh_in_progress": False,
+                        }
+                    )
+                else:
+                    self._status = IndexStatus(
+                        phase="error",
+                        message=f"Indexing failed: {exc}",
+                        indexed_grants=0,
+                        scanned_prefixes=self._status.scanned_prefixes,
+                        total_prefixes=len(self.prefixes),
+                        failed_prefixes=max(1, self._status.failed_prefixes),
+                        truncated_prefixes=self._status.truncated_prefixes,
+                        embeddings_ready=False,
+                        degraded=True,
+                        coverage_complete=False,
+                        matching_available=False,
+                        degradation_reasons=["index_build_failed"],
+                        started_at=started_at,
+                        finished_at=finished_at,
+                        current_prefix=self._status.current_prefix,
+                        current_page=self._status.current_page,
+                        pages_fetched=self._status.pages_fetched,
+                        requests_completed=self._status.requests_completed,
+                        last_progress_at=self._status.last_progress_at,
+                        snapshot_loaded=False,
+                        snapshot_age_seconds=None,
+                        refresh_in_progress=False,
+                        refresh_indexed_grants=self._status.refresh_indexed_grants,
+                    )
             logger.exception("Grant index build failed")
             sentry_sdk.capture_exception(exc)
 
-    def _update_progress(
-        self,
-        scanned_prefixes: int,
-        total_prefixes: int,
-        failed_prefixes: int,
-        indexed_grants: int,
-    ) -> None:
+    def _update_progress(self, progress: IndexBuildProgress) -> None:
         with self._lock:
+            if self._snapshot_loaded and self._grants:
+                phase = "ready_degraded"
+                message = "Using saved index while live refresh runs"
+                matching_available = True
+                indexed_grants = len(self._grants)
+                degraded = True
+                reasons = _dedupe_reasons([*self._status.degradation_reasons, "stale_snapshot_mode"])
+                embeddings_ready = self._status.embeddings_ready
+            else:
+                phase = "building"
+                message = "Indexing live grants"
+                matching_available = False
+                indexed_grants = 0
+                degraded = progress.failed_prefixes > 0
+                reasons = ["prefix_fetch_failed"] if progress.failed_prefixes > 0 else []
+                embeddings_ready = False
+
+            if progress.failed_prefixes > 0 and "prefix_fetch_failed" not in reasons:
+                reasons.append("prefix_fetch_failed")
+
             self._status = IndexStatus(
-                phase="building",
-                message="Indexing live grants",
+                phase=phase,
+                message=message,
                 indexed_grants=indexed_grants,
-                scanned_prefixes=scanned_prefixes,
-                total_prefixes=total_prefixes,
-                failed_prefixes=failed_prefixes,
+                scanned_prefixes=progress.scanned_prefixes,
+                total_prefixes=progress.total_prefixes,
+                failed_prefixes=progress.failed_prefixes,
                 truncated_prefixes=self._status.truncated_prefixes,
-                embeddings_ready=False,
-                degraded=failed_prefixes > 0,
+                embeddings_ready=embeddings_ready,
+                degraded=degraded,
                 coverage_complete=False,
-                matching_available=False,
-                degradation_reasons=["prefix_fetch_failed"] if failed_prefixes > 0 else [],
+                matching_available=matching_available,
+                degradation_reasons=_dedupe_reasons(reasons),
                 started_at=self._status.started_at,
                 finished_at=None,
+                current_prefix=progress.current_prefix,
+                current_page=progress.current_page,
+                pages_fetched=progress.pages_fetched,
+                requests_completed=progress.requests_completed,
+                last_progress_at=progress.last_progress_at,
+                snapshot_loaded=self._snapshot_loaded,
+                snapshot_age_seconds=self._snapshot_age_seconds(),
+                refresh_in_progress=True,
+                refresh_indexed_grants=progress.indexed_grants,
             )
+
+    def _snapshot_age_seconds(self, *, reference_time: datetime | None = None) -> int | None:
+        if self._snapshot_written_at is None:
+            return None
+        now = reference_time or datetime.now(timezone.utc)
+        return max(0, int((now - self._snapshot_written_at).total_seconds()))
+
+    def _decorate_status(self, status: IndexStatus) -> IndexStatus:
+        decorated = status.model_copy(deep=True)
+        decorated.snapshot_loaded = self._snapshot_loaded
+        decorated.snapshot_age_seconds = self._snapshot_age_seconds() if self._snapshot_loaded else None
+
+        reasons = list(decorated.degradation_reasons)
+        if self._snapshot_loaded and "stale_snapshot_mode" not in reasons:
+            reasons.append("stale_snapshot_mode")
+
+        if decorated.refresh_in_progress and decorated.last_progress_at:
+            try:
+                last_progress_at = datetime.fromisoformat(decorated.last_progress_at)
+            except ValueError:
+                last_progress_at = None
+            if last_progress_at is not None:
+                stalled_for = (datetime.now(timezone.utc) - last_progress_at).total_seconds()
+                if stalled_for >= self.settings.index_refresh_stall_seconds and "refresh_delayed" not in reasons:
+                    reasons.append("refresh_delayed")
+
+        decorated.degradation_reasons = _dedupe_reasons(reasons)
+        decorated.degraded = decorated.degraded or bool(decorated.degradation_reasons)
+        return decorated
 
     def get_status(self) -> IndexStatus:
         with self._lock:
-            return self._status.model_copy(deep=True)
+            return self._decorate_status(self._status)
 
     def get_grants(self) -> list[GrantRecord]:
         with self._lock:

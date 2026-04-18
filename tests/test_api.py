@@ -37,6 +37,9 @@ def test_health_endpoint_reports_readiness_state():
                 coverage_complete=False,
                 matching_available=True,
                 degradation_reasons=["prefix_fetch_failed", "lexical_only_mode"],
+                snapshot_loaded=True,
+                snapshot_age_seconds=120,
+                refresh_in_progress=True,
             )
 
     client = TestClient(create_app(app_state=FakeState()))
@@ -101,6 +104,11 @@ def test_index_status_endpoint_starts_indexing_and_returns_status():
                 coverage_complete=False,
                 matching_available=False,
                 degradation_reasons=[],
+                current_prefix="HORIZON-CL4-2026",
+                current_page=2,
+                pages_fetched=8,
+                requests_completed=8,
+                last_progress_at="2026-04-18T10:00:00+00:00",
             )
 
         def get_grants(self) -> list[object]:
@@ -113,7 +121,42 @@ def test_index_status_endpoint_starts_indexing_and_returns_status():
 
     assert response.status_code == 200
     assert response.json()["phase"] == "building"
+    assert response.json()["current_prefix"] == "HORIZON-CL4-2026"
     assert app.state.app_state.started is True
+
+
+def test_readiness_endpoint_reports_snapshot_backed_matching():
+    class FakeState:
+        def ensure_indexing_started(self) -> None:
+            return None
+
+        def get_status(self) -> IndexStatus:
+            return IndexStatus(
+                phase="ready_degraded",
+                message="Using saved index while live refresh runs",
+                indexed_grants=12,
+                scanned_prefixes=1,
+                total_prefixes=10,
+                failed_prefixes=0,
+                truncated_prefixes=0,
+                embeddings_ready=True,
+                degraded=True,
+                coverage_complete=False,
+                matching_available=True,
+                degradation_reasons=["stale_snapshot_mode"],
+                snapshot_loaded=True,
+                snapshot_age_seconds=90,
+                refresh_in_progress=True,
+            )
+
+    client = TestClient(create_app(app_state=FakeState()))
+
+    response = client.get("/api/ready")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
+    assert response.json()["snapshot_loaded"] is True
+    assert response.json()["refresh_in_progress"] is True
 
 
 def test_match_endpoint_returns_ranked_results():

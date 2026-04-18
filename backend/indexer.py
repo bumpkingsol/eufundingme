@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import sentry_sdk
 
 from .ec_client import ECSearchClient
-from .models import GrantRecord, IndexBuildDetails
+from .models import GrantRecord, IndexBuildDetails, IndexBuildProgress
 from .normalize import is_code_like_label, is_numericish, normalize_grant
 
 logger = logging.getLogger(__name__)
@@ -108,7 +108,7 @@ def build_grant_index(
     now: datetime | None = None,
     page_size: int = 100,
     max_pages_per_prefix: int | None = None,
-    progress_callback: Callable[[int, int, int, int], None] | None = None,
+    progress_callback: Callable[[IndexBuildProgress], None] | None = None,
 ) -> tuple[list[GrantRecord], IndexBuildDetails]:
     active_prefixes = list(prefixes or CALL_PREFIXES)
     collected: list[GrantRecord] = []
@@ -116,6 +116,8 @@ def build_grant_index(
     truncated_prefixes = 0
     reference_time = now or datetime.now(timezone.utc)
     degradation_reasons: list[str] = []
+    pages_fetched = 0
+    requests_completed = 0
 
     for prefix_index, prefix in enumerate(active_prefixes, start=1):
         try:
@@ -134,9 +136,11 @@ def build_grant_index(
                     )
                     break
                 payload = client.search(text=prefix, page_number=page_number, page_size=page_size)
+                requests_completed += 1
                 raw_results = payload.get("results", [])
                 if not isinstance(raw_results, list) or not raw_results:
                     break
+                pages_fetched += 1
                 for item in raw_results:
                     if not isinstance(item, dict):
                         continue
@@ -144,6 +148,21 @@ def build_grant_index(
                     if not isinstance(metadata, dict):
                         continue
                     collected.append(normalize_grant(metadata, result_url=item.get("url")))
+                if progress_callback is not None:
+                    indexed_count = len(filter_indexable_grants(collected, now=reference_time))
+                    progress_callback(
+                        IndexBuildProgress(
+                            scanned_prefixes=prefix_index - 1,
+                            total_prefixes=len(active_prefixes),
+                            failed_prefixes=failed_prefixes,
+                            indexed_grants=indexed_count,
+                            current_prefix=prefix,
+                            current_page=page_number,
+                            pages_fetched=pages_fetched,
+                            requests_completed=requests_completed,
+                            last_progress_at=datetime.now(timezone.utc).isoformat(),
+                        )
+                    )
                 total_results = payload.get("totalResults")
                 if isinstance(total_results, int) and total_results <= page_number * page_size:
                     break
@@ -159,7 +178,19 @@ def build_grant_index(
         finally:
             if progress_callback is not None:
                 indexed_count = len(filter_indexable_grants(collected, now=reference_time))
-                progress_callback(prefix_index, len(active_prefixes), failed_prefixes, indexed_count)
+                progress_callback(
+                    IndexBuildProgress(
+                        scanned_prefixes=prefix_index,
+                        total_prefixes=len(active_prefixes),
+                        failed_prefixes=failed_prefixes,
+                        indexed_grants=indexed_count,
+                        current_prefix=prefix,
+                        current_page=page_number,
+                        pages_fetched=pages_fetched,
+                        requests_completed=requests_completed,
+                        last_progress_at=datetime.now(timezone.utc).isoformat(),
+                    )
+                )
 
     return (
         filter_indexable_grants(collected, now=reference_time),

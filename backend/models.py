@@ -87,6 +87,7 @@ class MatchResult(BaseModel):
 
 class MatchResponse(BaseModel):
     indexed_grants: int
+    refresh_indexed_grants: int = 0
     degraded: bool = False
     degradation_reasons: list[str] = Field(default_factory=list)
     results: list[MatchResult]
@@ -107,6 +108,15 @@ class IndexStatus(BaseModel):
     degradation_reasons: list[str] = Field(default_factory=list)
     started_at: str | None = None
     finished_at: str | None = None
+    current_prefix: str | None = None
+    current_page: int | None = None
+    pages_fetched: int = 0
+    requests_completed: int = 0
+    last_progress_at: str | None = None
+    snapshot_loaded: bool = False
+    snapshot_age_seconds: int | None = None
+    refresh_in_progress: bool = False
+    refresh_indexed_grants: int = 0
 
 
 class HealthResponse(BaseModel):
@@ -122,6 +132,8 @@ class ReadinessResponse(BaseModel):
     message: str
     degraded: bool
     degradation_reasons: list[str] = Field(default_factory=list)
+    snapshot_loaded: bool = False
+    refresh_in_progress: bool = False
 
 
 class ParsedLLMMatch(BaseModel):
@@ -140,3 +152,23 @@ class IndexBuildDetails:
     failed_prefixes: int = 0
     truncated_prefixes: int = 0
     degradation_reasons: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class IndexBuildProgress:
+    scanned_prefixes: int
+    total_prefixes: int
+    failed_prefixes: int
+    indexed_grants: int
+    current_prefix: str
+    current_page: int
+    pages_fetched: int
+    requests_completed: int
+    last_progress_at: str
+
+
+class SnapshotEnvelope(BaseModel):
+    grants: list[dict[str, object]]
+    embeddings: dict[str, list[float]] = Field(default_factory=dict)
+    status_payload: dict[str, object]
+    written_at: str

@@ -101,24 +101,42 @@ class MatchService:
         *,
         now: datetime | None = None,
         limit: int = 10,
+        base_degradation_reasons: Sequence[str] | None = None,
     ) -> MatchResponse:
         reference_time = now or datetime.now(timezone.utc)
+        degradation_reasons = list(base_degradation_reasons or [])
         candidates = self.shortlister(company_description, grants, limit)
 
         if not candidates:
-            return MatchResponse(indexed_grants=len(grants), results=[])
+            return MatchResponse(
+                indexed_grants=len(grants),
+                refresh_indexed_grants=len(grants),
+                degraded=bool(degradation_reasons),
+                degradation_reasons=degradation_reasons,
+                results=[],
+            )
 
         if self.scorer is not None:
             try:
                 parsed_matches = list(self.scorer(company_description, candidates))
                 results = build_ai_results(parsed_matches, candidates, now=reference_time)
                 if results:
-                    return MatchResponse(indexed_grants=len(grants), results=results)
+                    return MatchResponse(
+                        indexed_grants=len(grants),
+                        refresh_indexed_grants=len(grants),
+                        degraded=bool(degradation_reasons),
+                        degradation_reasons=degradation_reasons,
+                        results=results,
+                    )
             except Exception:
-                pass
+                if "openai_scoring_failed" not in degradation_reasons:
+                    degradation_reasons.append("openai_scoring_failed")
 
         return MatchResponse(
             indexed_grants=len(grants),
+            refresh_indexed_grants=len(grants),
+            degraded=bool(degradation_reasons),
+            degradation_reasons=degradation_reasons,
             results=build_fallback_results(company_description, candidates, now=reference_time),
         )
 

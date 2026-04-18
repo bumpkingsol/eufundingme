@@ -38,6 +38,9 @@ export EC_MAX_RETRIES=2
 export EC_RETRY_BACKOFF_SECONDS=0.5
 export SHORTLIST_LIMIT=10
 export SENTRY_TRACES_SAMPLE_RATE=0.2
+export INDEX_SNAPSHOT_PATH=.cache/grant-index.json
+export INDEX_SNAPSHOT_MAX_AGE_HOURS=24
+export INDEX_REFRESH_STALL_SECONDS=60
 export DEMO_PROFILES_PATH=...
 ```
 
@@ -138,7 +141,10 @@ curl http://127.0.0.1:8000/api/match \
 
 - The EC API ignores server-side status filters, so indexing uses call-prefix fan-out and client-side filtering.
 - The app keeps the grant index in memory for speed.
+- The app also persists the last successful completed index to disk and warm-starts from it on the next boot when available.
 - By default the crawler runs exhaustively across pages for each prefix. Set `EC_MAX_PAGES_PER_PREFIX` only if you want an explicit crawl cap; capped crawls are reported as degraded coverage.
+- Warm-started runs show `ready_degraded` while a background refresh is in progress. Matching stays available from the saved snapshot, but partial in-progress crawl data is never used for results.
+- `INDEX_SNAPSHOT_MAX_AGE_HOURS` marks saved data as stale for operator visibility, and `INDEX_REFRESH_STALL_SECONDS` adds a `refresh_delayed` degradation signal if live crawl progress stops updating.
 - Known demo companies such as `OpenAI`, `Northvolt`, and `Doctolib` resolve from checked-in profiles and are also available as one-click presets in the UI.
 - Unknown short company names use OpenAI expansion only when `OPENAI_API_KEY` is configured. Without it, the UI asks for one or two descriptive sentences instead of sending the short name into `/api/match`.
 - If `OPENAI_API_KEY` is not set, the app stays available in lexical-only mode and reports degraded matching quality.
@@ -147,7 +153,7 @@ curl http://127.0.0.1:8000/api/match \
 
 ## Demo Flow
 
-1. Start the app and wait until `/api/index/status` reports `ready` or `ready_degraded`.
+1. Start the app. If a saved snapshot exists, the app becomes usable immediately in `ready_degraded` while the exhaustive live refresh continues in the background.
 2. Click the `OpenAI` preset to run the scripted first search.
 3. Click `Northvolt` or `Doctolib` to show a contrasting sector.
 4. For a live audience test, type a company name directly.

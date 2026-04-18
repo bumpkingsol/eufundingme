@@ -12,6 +12,10 @@ const statusPrefixes = document.querySelector("#status-prefixes");
 const statusFailures = document.querySelector("#status-failures");
 const statusCoverage = document.querySelector("#status-coverage");
 const statusEmbeddings = document.querySelector("#status-embeddings");
+const statusSource = document.querySelector("#status-source");
+const statusRefresh = document.querySelector("#status-refresh");
+const statusProgress = document.querySelector("#status-progress");
+const statusUpdated = document.querySelector("#status-updated");
 const statusDegraded = document.querySelector("#status-degraded");
 const resolutionBanner = document.querySelector("#resolution-banner");
 const resultsEmpty = document.querySelector("#results-empty");
@@ -150,6 +154,37 @@ function syncPresetSelection() {
   }
 }
 
+function formatDuration(seconds) {
+  if (seconds === null || seconds === undefined || Number.isNaN(Number(seconds))) {
+    return "—";
+  }
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) {
+    return `${minutes}m`;
+  }
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h`;
+}
+
+function formatLastProgress(timestamp) {
+  if (!timestamp) {
+    return "—";
+  }
+  const progressTime = new Date(timestamp);
+  if (Number.isNaN(progressTime.getTime())) {
+    return "—";
+  }
+  const diffSeconds = Math.max(0, Math.round((Date.now() - progressTime.getTime()) / 1000));
+  return `${formatDuration(diffSeconds)} ago`;
+}
+
+function humanizeReasons(reasons) {
+  return (reasons || []).map((reason) => reason.replaceAll("_", " "));
+}
+
 function applyDemoPreset(preset) {
   descriptionInput.value = preset.profile;
   activePresetName = preset.name;
@@ -215,15 +250,32 @@ function updateStatus(status) {
   statusFailures.textContent = String(failedPrefixes + truncatedPrefixes);
   statusCoverage.textContent = coverageLabel;
   statusEmbeddings.textContent = status.embeddings_ready ? "ready" : "warming up";
-  statusBar.style.width = `${status.phase === "ready" ? 100 : ratio}%`;
+  statusSource.textContent = status.snapshot_loaded
+    ? `saved index (${formatDuration(status.snapshot_age_seconds)} old)`
+    : "live crawl";
+  statusRefresh.textContent = status.refresh_in_progress
+    ? status.snapshot_loaded
+      ? "refreshing in background"
+      : "building live index"
+    : "idle";
+  statusProgress.textContent =
+    status.current_prefix && status.current_page
+      ? `${status.current_prefix} p.${status.current_page}`
+      : "—";
+  statusUpdated.textContent = formatLastProgress(status.last_progress_at);
+  statusBar.style.width = `${status.phase === "ready" || (status.snapshot_loaded && !status.refresh_in_progress) ? 100 : ratio}%`;
   matchButton.disabled = !isMatchingAvailable(status);
-  submitHint.textContent = isMatchingAvailable(status)
-    ? DEFAULT_SUBMIT_HINT
-    : status.message || "Matching becomes available when the live grant index is ready.";
+  if (status.snapshot_loaded && status.refresh_in_progress) {
+    submitHint.textContent = "Using saved index while the exhaustive live refresh continues in the background.";
+  } else {
+    submitHint.textContent = isMatchingAvailable(status)
+      ? DEFAULT_SUBMIT_HINT
+      : status.message || "Matching becomes available when the live grant index is ready.";
+  }
 
   if (status.degraded && status.degradation_reasons?.length) {
     statusDegraded.hidden = false;
-    statusDegraded.textContent = `Degraded mode: ${status.degradation_reasons.join(", ").replaceAll("_", " ")}.`;
+    statusDegraded.textContent = `Degraded mode: ${humanizeReasons(status.degradation_reasons).join(", ")}.`;
   } else {
     statusDegraded.hidden = true;
     statusDegraded.textContent = "";
@@ -294,6 +346,8 @@ async function fetchStatus() {
       coverage_complete: false,
       matching_available: false,
       degradation_reasons: ["status_poll_failed"],
+      snapshot_loaded: false,
+      refresh_in_progress: false,
     });
     scheduleStatusPoll(Math.min(15000, 2500 * (consecutiveStatusFailures + 1)));
   } finally {

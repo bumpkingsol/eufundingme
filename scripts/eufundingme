@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import sys
 
 
@@ -14,7 +15,21 @@ def _ensure_repo_root() -> None:
     sys.path.insert(0, repo_root)
 
 
+def _maybe_reexec_local_venv() -> None:
+    this_dir = Path(__file__).resolve().parent
+    repo_root = this_dir.parent
+    venv_python = repo_root / ".venv" / "bin" / "python"
+    if not venv_python.exists():
+        return
+    active_prefix = Path(getattr(sys, "prefix", "")).resolve()
+    expected_prefix = (repo_root / ".venv").resolve()
+    if active_prefix == expected_prefix:
+        return
+    os.execv(str(venv_python), [str(venv_python), str(Path(__file__).resolve()), *sys.argv[1:]])
+
+
 def _main() -> int:
+    _maybe_reexec_local_venv()
     _ensure_repo_root()
     from backend.cli import main
 

@@ -187,6 +187,8 @@ def create_app(
             message=status.message,
             degraded=status.degraded,
             degradation_reasons=status.degradation_reasons,
+            snapshot_loaded=status.snapshot_loaded,
+            refresh_in_progress=status.refresh_in_progress,
         )
         if status.matching_available:
             return readiness

@@ -240,6 +240,61 @@ def test_build_grant_index_reports_failed_prefixes_without_raising():
     assert build_details.degradation_reasons == ["prefix_fetch_failed"]
 
 
+def test_build_grant_index_reports_progress_for_each_page():
+    class FakeClient:
+        def search(self, *, text: str, page_number: int, page_size: int) -> dict:
+            if page_number == 1:
+                return {
+                    "results": [
+                        {
+                            "metadata": {
+                                "title": ["Grant 1"],
+                                "identifier": ["TOPIC-1"],
+                                "status": ["31094501"],
+                                "deadlineDate": ["2026-08-01T17:00:00Z"],
+                            }
+                        }
+                    ],
+                    "totalResults": 2,
+                }
+            if page_number == 2:
+                return {
+                    "results": [
+                        {
+                            "metadata": {
+                                "title": ["Grant 2"],
+                                "identifier": ["TOPIC-2"],
+                                "status": ["31094501"],
+                                "deadlineDate": ["2026-08-02T17:00:00Z"],
+                            }
+                        }
+                    ],
+                    "totalResults": 2,
+                }
+            return {"results": [], "totalResults": 2}
+
+    progress_events = []
+
+    build_grant_index(
+        client=FakeClient(),
+        prefixes=["AI-2026"],
+        page_size=1,
+        max_pages_per_prefix=None,
+        now=datetime(2026, 4, 18, tzinfo=timezone.utc),
+        progress_callback=progress_events.append,
+    )
+
+    assert len(progress_events) == 3
+    assert progress_events[0].current_prefix == "AI-2026"
+    assert progress_events[0].current_page == 1
+    assert progress_events[0].pages_fetched == 1
+    assert progress_events[0].scanned_prefixes == 0
+    assert progress_events[1].current_page == 2
+    assert progress_events[1].pages_fetched == 2
+    assert progress_events[1].requests_completed == 2
+    assert progress_events[2].scanned_prefixes == 1
+
+
 def test_ec_search_client_retries_transient_request_failures():
     class FakeSession:
         def __init__(self) -> None:
