@@ -10,6 +10,13 @@ SEARCH_ENDPOINT = "https://api.tech.ec.europa.eu/search-api/prod/rest/search"
 logger = logging.getLogger(__name__)
 
 
+def _classify_query_text(text: str) -> str:
+    normalized = text.strip().upper()
+    if "-" in normalized and any(char.isdigit() for char in normalized):
+        return "prefix"
+    return "text"
+
+
 class ECSearchClient:
     def __init__(
         self,
@@ -29,22 +36,28 @@ class ECSearchClient:
     def search(self, *, text: str, page_number: int = 1, page_size: int = 100) -> dict:
         for attempt in range(self.max_retries + 1):
             try:
-                response = self.session.post(
-                    SEARCH_ENDPOINT,
-                    params={
-                        "apiKey": self.api_key,
-                        "text": text,
-                        "pageSize": page_size,
-                        "pageNumber": page_number,
-                    },
-                    json={"bool": {"must": [{"terms": {"type": ["1", "2", "8"]}}]}},
-                    timeout=self.timeout_seconds,
-                )
-                response.raise_for_status()
-                payload = response.json()
-                if not isinstance(payload, dict):
-                    raise ValueError("EC search API returned a non-object response")
-                return payload
+                with sentry_sdk.start_span(op="ec.search", name="EC search request") as span:
+                    span.set_data("attempt", attempt + 1)
+                    span.set_data("page_number", page_number)
+                    span.set_data("page_size", page_size)
+                    span.set_data("query_kind", _classify_query_text(text))
+                    response = self.session.post(
+                        SEARCH_ENDPOINT,
+                        params={
+                            "apiKey": self.api_key,
+                            "text": text,
+                            "pageSize": page_size,
+                            "pageNumber": page_number,
+                        },
+                        json={"bool": {"must": [{"terms": {"type": ["1", "2", "8"]}}]}},
+                        timeout=self.timeout_seconds,
+                    )
+                    span.set_data("status_code", getattr(response, "status_code", None))
+                    response.raise_for_status()
+                    payload = response.json()
+                    if not isinstance(payload, dict):
+                        raise ValueError("EC search API returned a non-object response")
+                    return payload
             except (requests.Timeout, requests.ConnectionError, requests.HTTPError) as exc:
                 logger.warning(
                     "EC search request failed",

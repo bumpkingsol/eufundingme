@@ -8,6 +8,7 @@ def test_readme_lists_cli_usage_and_api_contract():
     assert "CLI" in text
     assert "python -m backend.cli" in text
     assert "/api/profile/resolve" in text
+    assert "/api/application-brief" in text
     assert "Agent Handoff" in text
     assert "Copy Instructions" in text
 

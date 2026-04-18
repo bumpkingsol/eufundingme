@@ -143,6 +143,7 @@ The web UI `Agent Handoff` panel is intended for external agent environments and
 - `GET /api/index/status`
 - `POST /api/profile/resolve`
 - `POST /api/match`
+- `POST /api/application-brief`
 - `GET /sentry-debug`
 
 Example match request:
@@ -169,7 +170,9 @@ Successful `POST /api/match` responses include a top-level `request_id` alongsid
 - Known demo companies such as `OpenAI`, `Northvolt`, and `Doctolib` resolve from checked-in profiles.
 - Unknown short company names use OpenAI expansion only when `OPENAI_API_KEY` is configured. Without it, the UI asks for one or two descriptive sentences instead of sending the short name into `/api/match`.
 - The backend uses pinned OpenAI model snapshots for stable production behavior; override them with env vars if needed.
-- Sentry captures backend failures, OpenAI calls, and core API traces. Request bodies and sensitive headers are scrubbed before events are sent.
+- Sentry captures backend failures, OpenAI calls, and backend traces for the core API flows. This repo intentionally does not add browser-side Sentry instrumentation.
+- Browser-driven flows propagate a per-journey `X-Request-ID` across `profile/resolve`, `match`, and `application-brief` so backend traces can be correlated end-to-end.
+- Match telemetry reports embedding availability and whether the request actually used embedding shortlist versus lexical fallback; it does not report a cache hit rate because there is no request-level embedding cache.
 - If `OPENAI_API_KEY` is not set, the app stays available in lexical-only mode and reports degraded matching quality.
 - If embeddings or AI scoring fail at runtime, the app falls back to lexical ranking and marks the match/index state as degraded.
 - If `SENTRY_DSN` is not set, the app still runs but no Sentry monitoring is emitted.

@@ -322,3 +322,93 @@ def test_ec_search_client_retries_transient_request_failures():
 
     assert payload == {"results": [], "totalResults": 0}
     assert client.session.attempts == 3
+
+
+def test_ec_search_client_emits_span_data(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"results": [], "totalResults": 0}
+
+    class FakeSession:
+        def post(self, *args, **kwargs):
+            return FakeResponse()
+
+    class FakeSpan:
+        def __init__(self) -> None:
+            self.data = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        def set_data(self, key, value) -> None:
+            self.data[key] = value
+
+    spans = []
+    monkeypatch.setattr(
+        "backend.ec_client.sentry_sdk.start_span",
+        lambda **kwargs: spans.append(FakeSpan()) or spans[-1],
+    )
+
+    client = ECSearchClient(session=FakeSession(), timeout_seconds=1.0, max_retries=0, retry_backoff_seconds=0.0)
+
+    payload = client.search(text="AI-2026", page_number=2, page_size=50)
+
+    assert payload == {"results": [], "totalResults": 0}
+    assert spans[0].data["page_number"] == 2
+    assert spans[0].data["page_size"] == 50
+    assert spans[0].data["attempt"] == 1
+
+
+def test_build_grant_index_emits_refresh_measurements(monkeypatch):
+    class FakeClient:
+        def search(self, *, text: str, page_number: int, page_size: int) -> dict:
+            return {
+                "results": [
+                    {
+                        "metadata": {
+                            "title": ["Grant 1"],
+                            "identifier": ["TOPIC-1"],
+                            "status": ["31094501"],
+                            "deadlineDate": ["2026-08-01T17:00:00Z"],
+                        }
+                    }
+                ],
+                "totalResults": 1,
+            }
+
+    class FakeSpan:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        def set_data(self, key, value) -> None:
+            return None
+
+    measurements = []
+    monkeypatch.setattr("backend.indexer.sentry_sdk.start_span", lambda **kwargs: FakeSpan())
+    monkeypatch.setattr(
+        "backend.indexer.sentry_sdk.set_measurement",
+        lambda name, value: measurements.append((name, value)),
+    )
+
+    grants, build_details = build_grant_index(
+        client=FakeClient(),
+        prefixes=["AI-2026"],
+        now=datetime(2026, 4, 18, tzinfo=timezone.utc),
+    )
+
+    assert [grant.id for grant in grants] == ["TOPIC-1"]
+    assert build_details.failed_prefixes == 0
+    assert ("index_requests_completed", 1) in measurements
+    assert ("index_pages_fetched", 1) in measurements
+    assert ("index_indexed_grants", 1) in measurements

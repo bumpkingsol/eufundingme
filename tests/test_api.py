@@ -434,7 +434,7 @@ def test_match_endpoint_includes_request_id_header_override():
     assert payload["detail"]["request_id"] == "agent-run-override"
 
 
-def test_match_endpoint_records_embedding_cache_measurement(monkeypatch):
+def test_match_endpoint_records_truthful_embedding_measurements(monkeypatch):
     class FakeState:
         def ensure_indexing_started(self) -> None:
             return None
@@ -483,7 +483,7 @@ def test_match_endpoint_records_embedding_cache_measurement(monkeypatch):
     )
 
     assert response.status_code == 200
-    assert ("embedding_cache_hit_rate", 1.0) in measurements
+    assert ("grant_embeddings_available", 1.0) in measurements
 
 
 def test_sentry_debug_route_exists():
@@ -564,6 +564,7 @@ def test_application_brief_endpoint_returns_markdown_and_sections():
 
     response = client.post(
         "/api/application-brief",
+        headers={"X-Request-ID": "journey-123"},
         json={
             "company_description": "We build AI tools for industrial companies.",
             "match_result": {
@@ -592,6 +593,7 @@ def test_application_brief_endpoint_returns_markdown_and_sections():
 
     assert response.status_code == 200
     payload = response.json()
+    assert payload["request_id"] == "journey-123"
     assert payload["markdown"] == "# Application brief"
     assert payload["sections"]["company_fit_summary"] == "Strong fit"
     assert payload["sections"]["key_requirements"] == ["Requirement 1"]
@@ -608,6 +610,7 @@ def test_application_brief_endpoint_reports_service_failure():
 
     response = client.post(
         "/api/application-brief",
+        headers={"X-Request-ID": "journey-123"},
         json={
             "company_description": "We build AI tools for industrial companies.",
             "match_result": {
@@ -635,4 +638,167 @@ def test_application_brief_endpoint_reports_service_failure():
     )
 
     assert response.status_code == 502
-    assert response.json()["detail"] == "brief generation failed"
+    assert response.json()["detail"]["message"] == "brief generation failed"
+    assert response.json()["detail"]["request_id"] == "journey-123"
+
+
+def test_application_brief_endpoint_binds_request_context_and_captures_failure(monkeypatch):
+    class FailingBriefService:
+        def generate(self, **_kwargs):
+            raise RuntimeError("brief generation failed")
+
+    bound = []
+    captured = []
+    monkeypatch.setattr("backend.app.bind_request_context", lambda **kwargs: bound.append(kwargs))
+    monkeypatch.setattr(
+        "backend.app.capture_backend_exception",
+        lambda exc, **kwargs: captured.append((str(exc), kwargs)),
+    )
+
+    app = create_app()
+    app.state.application_brief_service = FailingBriefService()
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/application-brief",
+        headers={"X-Request-ID": "journey-456"},
+        json={
+            "company_description": "We build AI tools for industrial companies.",
+            "match_result": {
+                "grant_id": "TOPIC-1",
+                "title": "AI Grant",
+                "status": "Open",
+                "portal_url": "https://example.com/TOPIC-1",
+                "fit_score": 90,
+                "why_match": "Strong fit",
+                "application_angle": "Lead with deployment outcomes",
+                "keywords": ["ai"],
+            },
+            "grant_detail": {
+                "grant_id": "TOPIC-1",
+                "full_description": "Long description",
+                "eligibility_criteria": ["EU legal entity"],
+                "submission_deadlines": [{"label": "Main deadline", "value": "2026-08-01"}],
+                "expected_outcomes": ["Outcome 1"],
+                "documents": [],
+                "partner_search_available": True,
+                "source": "browser_topic_detail",
+                "fallback_used": False,
+            },
+        },
+    )
+
+    assert response.status_code == 502
+    assert bound == [{
+        "operation": "application_brief",
+        "request_id": "journey-456",
+        "model": app.state.settings.openai_match_model if app.state.settings.openai_api_key else None,
+    }]
+    assert captured == [(
+        "brief generation failed",
+        {
+            "component": "application_brief",
+            "operation": "generate_application_brief",
+            "model": app.state.settings.openai_match_model,
+            "fallback_used": False,
+            "request_id": "journey-456",
+            "context": {"grant_id": "TOPIC-1"},
+        },
+    )]
+
+
+def test_grant_detail_endpoint_returns_normalized_payload():
+    class FakeDetailService:
+        def get(self, topic_id: str) -> GrantDetailResponse:
+            assert topic_id == "TOPIC-1"
+            return GrantDetailResponse(
+                grant_id="TOPIC-1",
+                full_description="Detailed description",
+                eligibility_criteria=["EU legal entity"],
+                submission_deadlines=[{"label": "Main deadline", "value": "2026-08-01"}],
+                expected_outcomes=["Outcome A"],
+                documents=[{"title": "Guide", "url": "https://example.com/guide.pdf"}],
+                partner_search_available=True,
+                source="topic_detail_json",
+                fallback_used=False,
+            )
+
+    app = create_app()
+    app.state.grant_detail_service = FakeDetailService()
+    client = TestClient(app)
+
+    response = client.get("/api/grants/TOPIC-1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["grant_id"] == "TOPIC-1"
+    assert payload["full_description"] == "Detailed description"
+    assert payload["eligibility_criteria"] == ["EU legal entity"]
+
+
+def test_grant_detail_endpoint_surfaces_missing_topic():
+    class MissingDetailService:
+        def get(self, topic_id: str):
+            raise LookupError(f"no grant detail found for {topic_id}")
+
+    app = create_app()
+    app.state.grant_detail_service = MissingDetailService()
+    client = TestClient(app)
+
+    response = client.get("/api/grants/TOPIC-404")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "no grant detail found for TOPIC-404"
+
+
+def test_grant_detail_endpoint_falls_back_to_indexed_grant_when_upstream_missing():
+    class MissingDetailService:
+        def get(self, topic_id: str):
+            raise LookupError(f"no grant detail found for {topic_id}")
+
+    class FakeState:
+        def ensure_indexing_started(self) -> None:
+            return None
+
+        def get_status(self):
+            return IndexStatus(
+                phase="ready",
+                message="Ready",
+                indexed_grants=1,
+                scanned_prefixes=1,
+                total_prefixes=1,
+                failed_prefixes=0,
+                truncated_prefixes=0,
+                embeddings_ready=False,
+                degraded=False,
+                coverage_complete=True,
+                matching_available=True,
+                degradation_reasons=[],
+            )
+
+        def get_grants(self):
+            from backend.models import GrantRecord
+
+            return [
+                GrantRecord(
+                    id="TOPIC-1",
+                    title="AI Grant",
+                    status="Open",
+                    portal_url="https://example.com/TOPIC-1",
+                    deadline="2026-08-01",
+                    budget_display="EUR 5M",
+                    description="Indexed fallback description",
+                )
+            ]
+
+    app = create_app(app_state=FakeState())
+    app.state.grant_detail_service = MissingDetailService()
+    client = TestClient(app)
+
+    response = client.get("/api/grants/TOPIC-1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["grant_id"] == "TOPIC-1"
+    assert payload["full_description"] == "Indexed fallback description"
+    assert payload["fallback_used"] is True

@@ -4,6 +4,8 @@ import logging
 from datetime import datetime, timezone
 from threading import Lock, Thread
 
+import sentry_sdk
+
 from .config import Settings
 from .ec_client import ECSearchClient
 from .embeddings import EmbeddingService, build_grant_embeddings
@@ -204,11 +206,15 @@ class AppState:
 
             if self.embedding_service is not None and self.settings.openai_api_key:
                 try:
-                    grant_embeddings = build_grant_embeddings(
-                        grants,
-                        embedding_service=self.embedding_service,
-                    )
+                    with sentry_sdk.start_span(op="grant_index.embeddings", name="Build grant embeddings") as span:
+                        span.set_data("grant_count", len(grants))
+                        grant_embeddings = build_grant_embeddings(
+                            grants,
+                            embedding_service=self.embedding_service,
+                        )
+                        span.set_data("embedding_count", len(grant_embeddings))
                     embeddings_ready = bool(grant_embeddings)
+                    sentry_sdk.set_measurement("index_embeddings_built", len(grant_embeddings))
                 except Exception as exc:
                     capture_backend_exception(
                         exc,

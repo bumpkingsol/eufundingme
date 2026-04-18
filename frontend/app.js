@@ -4,8 +4,6 @@ const DEFAULT_EMPTY_STATE =
 const MIN_DESCRIPTION_LENGTH = 20;
 const PROFILE_RESOLVE_DEBOUNCE_MS = 450;
 const MAX_COMPARISON_GRANTS = 3;
-const EC_TOPIC_DETAILS_BASE_URL =
-  "https://ec.europa.eu/info/funding-tenders/opportunities/data/topicDetails";
 
 const form = document.querySelector("#match-form");
 const descriptionInput = document.querySelector("#company-description");
@@ -53,6 +51,8 @@ let resolveDebounceHandle = null;
 let inFlightPreResolveQuery = "";
 let lastPreResolvedQuery = "";
 let latestResolveToken = 0;
+let currentJourneyRequestId = null;
+let currentJourneySeed = null;
 const resultsById = new Map();
 const grantDetailsById = new Map();
 const loadingGrantIds = new Set();
@@ -165,6 +165,27 @@ function hideResolutionBanner() {
 
 function normalizeCompanyNameInput(value) {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function createJourneyRequestId() {
+  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  return `journey-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function buildJourneySeed(value) {
+  return normalizeCompanyNameInput(value);
+}
+
+function ensureJourneyRequestId(seed = null) {
+  if (!currentJourneyRequestId || (seed && currentJourneySeed && currentJourneySeed !== seed)) {
+    currentJourneyRequestId = createJourneyRequestId();
+  }
+  if (seed) {
+    currentJourneySeed = seed;
+  }
+  return currentJourneyRequestId;
 }
 
 function looksLikeCompanyNameInput(value) {
@@ -473,10 +494,12 @@ function clearPendingPreResolve() {
 }
 
 async function resolveCompanyProfile(query) {
+  const journeyRequestId = ensureJourneyRequestId(buildJourneySeed(query));
   const response = await fetch("/api/profile/resolve", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      "X-Request-ID": journeyRequestId,
     },
     body: JSON.stringify({ query }),
   });
@@ -676,6 +699,13 @@ function normalizeTopicDetailPayload(payload, topicId) {
   };
 }
 
+function normalizeGrantDetailResponse(payload, grantId) {
+  if (payload && typeof payload === "object" && typeof payload.grant_id === "string") {
+    return payload;
+  }
+  return normalizeTopicDetailPayload(payload, grantId);
+}
+
 function stripHtmlToText(value) {
   return String(value || "")
     .replace(/<[^>]+>/g, " ")
@@ -755,12 +785,12 @@ async function toggleGrantDetails(grantId) {
   renderResults(latestResults, latestStatus?.indexed_grants || latestResults.length);
 
   try {
-    const response = await fetch(`${EC_TOPIC_DETAILS_BASE_URL}/${grantId}.json`);
+    const response = await fetch(`/api/grants/${encodeURIComponent(grantId)}`);
     if (!response.ok) {
       throw new Error("Could not load topic detail.");
     }
     const payload = await response.json();
-    grantDetailsById.set(grantId, normalizeTopicDetailPayload(payload, grantId));
+    grantDetailsById.set(grantId, normalizeGrantDetailResponse(payload, grantId));
   } catch (_error) {
     grantDetailsById.set(grantId, buildFallbackGrantDetail(grantId));
   } finally {
@@ -807,10 +837,12 @@ async function exportApplicationBrief(grantId) {
   }
   const companyDescription = descriptionInput.value.trim();
   const grantDetail = grantDetailsById.get(grantId) || buildFallbackGrantDetail(grantId);
+  const journeyRequestId = ensureJourneyRequestId();
   const response = await fetch("/api/application-brief", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      "X-Request-ID": journeyRequestId,
     },
     body: JSON.stringify({
       company_description: companyDescription,
@@ -861,6 +893,8 @@ async function submitMatch(event) {
     descriptionInput.focus();
     return;
   }
+  const journeySeed = buildJourneySeed(companyDescription);
+  const journeyRequestId = ensureJourneyRequestId(journeySeed);
 
   matchButton.disabled = true;
   matchButton.textContent = "Matching…";
@@ -887,6 +921,7 @@ async function submitMatch(event) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        "X-Request-ID": journeyRequestId,
       },
       body: JSON.stringify({ company_description: companyDescription }),
     });

@@ -197,6 +197,7 @@ class ApplicationBriefRequest(BaseModel):
 
 
 class ApplicationBriefResponse(BaseModel):
+    request_id: str | None = None
     markdown: str
     html: str
     sections: ApplicationBriefSections

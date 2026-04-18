@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import time
 
+import sentry_sdk
 from openai import OpenAI
 from pydantic import BaseModel
 
@@ -41,41 +43,62 @@ class ApplicationBriefService:
         match_result: dict,
         grant_detail: dict,
     ) -> ApplicationBriefResponse:
+        started_at = time.perf_counter()
         request = ApplicationBriefRequest(
             company_description=company_description,
             match_result=match_result,
             grant_detail=grant_detail,
         )
-        if self.client is None:
-            return self._build_fallback_response(request)
+        try:
+            if self.client is None:
+                with sentry_sdk.start_span(op="ai.application_brief", name="Application brief fallback") as span:
+                    span.set_data("grant_id", request.match_result.grant_id)
+                    span.set_data("fallback_used", True)
+                    response = self._build_fallback_response(request)
+                sentry_sdk.set_measurement("application_brief_fallback_used", 1.0)
+                sentry_sdk.set_measurement("application_brief_failed", 0.0)
+                return response
 
-        completion = self.client.responses.parse(
-            model=self.model,
-            instructions=(
-                "You draft an EU grant application brief. "
-                "Return concise, practical content grounded in the company profile, "
-                "match rationale, eligibility criteria, outcomes, and deadlines."
-            ),
-            input=json.dumps(
-                {
-                    "company_description": request.company_description,
-                    "match_result": request.match_result.model_dump(),
-                    "grant_detail": request.grant_detail.model_dump(),
-                },
-                ensure_ascii=True,
-            ),
-            text_format=_ApplicationBriefPayload,
-            reasoning=build_reasoning(self.reasoning_effort),
-        )
-        parsed = completion.output_parsed
-        if parsed is None:
-            raise RuntimeError("brief generation failed")
+            with sentry_sdk.start_span(op="ai.application_brief", name="Application brief generation") as span:
+                span.set_data("grant_id", request.match_result.grant_id)
+                span.set_data("fallback_used", False)
+                completion = self.client.responses.parse(
+                    model=self.model,
+                    instructions=(
+                        "You draft an EU grant application brief. "
+                        "Return concise, practical content grounded in the company profile, "
+                        "match rationale, eligibility criteria, outcomes, and deadlines."
+                    ),
+                    input=json.dumps(
+                        {
+                            "company_description": request.company_description,
+                            "match_result": request.match_result.model_dump(),
+                            "grant_detail": request.grant_detail.model_dump(),
+                        },
+                        ensure_ascii=True,
+                    ),
+                    text_format=_ApplicationBriefPayload,
+                    reasoning=build_reasoning(self.reasoning_effort),
+                )
+                parsed = completion.output_parsed
+                if parsed is None:
+                    raise RuntimeError("brief generation failed")
 
-        sections = ApplicationBriefSections.model_validate(parsed.model_dump())
-        return build_application_brief_response(
-            match_title=request.match_result.title,
-            sections=sections,
-        )
+            sections = ApplicationBriefSections.model_validate(parsed.model_dump())
+            sentry_sdk.set_measurement("application_brief_fallback_used", 0.0)
+            sentry_sdk.set_measurement("application_brief_failed", 0.0)
+            return build_application_brief_response(
+                match_title=request.match_result.title,
+                sections=sections,
+            )
+        except Exception:
+            sentry_sdk.set_measurement("application_brief_failed", 1.0)
+            raise
+        finally:
+            sentry_sdk.set_measurement(
+                "application_brief_latency_ms",
+                round((time.perf_counter() - started_at) * 1000, 3),
+            )
 
     def _build_fallback_response(self, request: ApplicationBriefRequest) -> ApplicationBriefResponse:
         detail = request.grant_detail

@@ -27,6 +27,7 @@ def test_build_traces_sampler_prioritizes_core_api_routes():
 
     assert sampler({"transaction_context": {"name": "POST /api/match"}}) == 1.0
     assert sampler({"transaction_context": {"name": "POST /api/profile/resolve"}}) == 1.0
+    assert sampler({"transaction_context": {"name": "POST /api/application-brief"}}) == 1.0
     assert sampler({"transaction_context": {"name": "GET /api/health"}}) == 0.2
 
 

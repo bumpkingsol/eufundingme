@@ -276,7 +276,7 @@ function queueProfileResponse(factory) {{
 
 function queueDetailResponse(topicId, payload) {{
   detailResponses.set(
-    `https://ec.europa.eu/info/funding-tenders/opportunities/data/topicDetails/${{topicId}}.json`,
+    `/api/grants/${{topicId}}`,
     {{
       ok: true,
       json: async () => payload,
@@ -461,6 +461,109 @@ if (descriptionInput.value !== "OpenAI full profile from quick fill.") {
 }
 if (resolutionBanner.hidden) {
   throw new Error("Expected resolution banner to be visible");
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_reuses_one_request_id_across_journey_calls():
+    script = build_frontend_harness(
+        """
+queueProfileResponse(
+  profileJsonResponse({
+    resolved: true,
+    profile: "OpenAI full profile from quick fill.",
+    display_name: "OpenAI",
+    source: "demo_profile",
+    message: null,
+  }),
+);
+
+appContext.renderResults([
+  {
+    grant_id: "TOPIC-1",
+    title: "AI Grant",
+    status: "Open",
+    deadline: "2026-08-01",
+    days_left: 20,
+    budget: "EUR 5M",
+    portal_url: "https://example.com/TOPIC-1",
+    fit_score: 90,
+    why_match: "Strong fit",
+    application_angle: "Lead with deployment",
+    framework_programme: "Horizon Europe",
+    programme_division: "Cluster 4",
+    keywords: ["ai"],
+  }
+], 42);
+
+await quickFillButton.dispatch("click");
+descriptionInput.value = "OpenAI";
+await form.dispatch("submit");
+await appContext.exportApplicationBrief("TOPIC-1");
+
+const interestingCalls = fetchCalls.filter((call) =>
+  ["/api/profile/resolve", "/api/match", "/api/application-brief"].includes(call.url)
+);
+if (interestingCalls.length !== 3) {
+  throw new Error(`Expected 3 correlated calls, got ${interestingCalls.length}`);
+}
+const requestIds = interestingCalls.map((call) => call.options.headers["X-Request-ID"]);
+if (requestIds.some((value) => typeof value !== "string" || !value.length)) {
+  throw new Error(`Missing journey request IDs: ${JSON.stringify(requestIds)}`);
+}
+if (new Set(requestIds).size !== 1) {
+  throw new Error(`Expected one journey request ID, got ${JSON.stringify(requestIds)}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_starts_new_request_id_for_new_search_journey():
+    script = build_frontend_harness(
+        """
+queueProfileResponse(
+  profileJsonResponse({
+    resolved: true,
+    profile: "OpenAI full profile one.",
+    display_name: "OpenAI",
+    source: "demo_profile",
+    message: null,
+  }),
+);
+descriptionInput.value = "OpenAI";
+await form.dispatch("submit");
+
+queueProfileResponse(
+  profileJsonResponse({
+    resolved: true,
+    profile: "Doctolib full profile two.",
+    display_name: "Doctolib",
+    source: "demo_profile",
+    message: null,
+  }),
+);
+descriptionInput.value = "Doctolib";
+await form.dispatch("submit");
+
+const matchCalls = fetchCalls.filter((call) => call.url === "/api/match");
+if (matchCalls.length !== 2) {
+  throw new Error(`Expected 2 match calls, got ${matchCalls.length}`);
+}
+const ids = matchCalls.map((call) => call.options.headers["X-Request-ID"]);
+if (ids.some((value) => typeof value !== "string" || !value.length)) {
+  throw new Error(`Missing journey IDs: ${JSON.stringify(ids)}`);
+}
+if (ids[0] === ids[1]) {
+  throw new Error(`Expected new journey ID for second search, got ${JSON.stringify(ids)}`);
 }
 """
     )
@@ -830,7 +933,7 @@ await appContext.toggleGrantDetails("TOPIC-1");
 await appContext.toggleGrantDetails("TOPIC-1");
 await appContext.toggleGrantDetails("TOPIC-1");
 
-const detailCalls = fetchCalls.filter((call) => call.url.includes("topicDetails/TOPIC-1.json"));
+const detailCalls = fetchCalls.filter((call) => call.url === "/api/grants/TOPIC-1");
 if (detailCalls.length !== 1) {
   throw new Error(`Expected one topic detail fetch, got ${detailCalls.length}`);
 }

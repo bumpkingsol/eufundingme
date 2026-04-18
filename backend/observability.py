@@ -34,7 +34,11 @@ def build_traces_sampler(default_rate: float) -> Callable[[dict[str, Any]], floa
     def traces_sampler(sampling_context: dict[str, Any]) -> float:
         transaction_context = sampling_context.get("transaction_context") or {}
         transaction_name = transaction_context.get("name") or ""
-        if transaction_name in {"POST /api/match", "POST /api/profile/resolve"}:
+        if transaction_name in {
+            "POST /api/match",
+            "POST /api/profile/resolve",
+            "POST /api/application-brief",
+        }:
             return 1.0
         return default_rate
 
@@ -92,7 +96,7 @@ def capture_backend_exception(
     fallback_used: bool = False,
     context: dict[str, Any] | None = None,
 ) -> None:
-    with sentry_sdk.push_scope() as scope:
+    with sentry_sdk.new_scope() as scope:
         scope.set_tag("component", component)
         scope.set_tag("operation", operation)
         scope.set_tag("fallback_used", str(fallback_used).lower())

@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+import time
 
 import sentry_sdk
 from fastapi import FastAPI, Header, HTTPException
@@ -11,10 +12,12 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from .application_brief import ApplicationBriefService
 from .config import Settings, load_settings
 from .embeddings import EmbeddingService, embedding_shortlist, lexical_shortlist
+from .grant_detail import GrantDetailService, build_grant_record_fallback
 from .matcher import MatchService, OpenAIScorer
 from .models import (
     ApplicationBriefRequest,
     ApplicationBriefResponse,
+    GrantDetailResponse,
     HealthResponse,
     IndexStatus,
     MatchRequest,
@@ -55,6 +58,13 @@ def build_match_unavailable_error(status: IndexStatus, request_id: str | None = 
     return payload
 
 
+def build_application_brief_error(message: str, request_id: str | None = None) -> dict:
+    payload = {"message": message}
+    if request_id is not None:
+        payload["request_id"] = request_id
+    return payload
+
+
 def build_match_service(settings: Settings, app_state: AppState) -> MatchService:
     embedding_service = None
     scorer = None
@@ -72,18 +82,24 @@ def build_match_service(settings: Settings, app_state: AppState) -> MatchService
         )
 
     def shortlist(company_description, grants, limit):
+        grant_embeddings = app_state.get_grant_embeddings() if embedding_service is not None else {}
+        sentry_sdk.set_measurement("grant_embeddings_available", 1.0 if grant_embeddings else 0.0)
         if embedding_service is not None:
-            grant_embeddings = app_state.get_grant_embeddings()
             if grant_embeddings:
                 try:
-                    return embedding_shortlist(
+                    shortlisted = embedding_shortlist(
                         company_description,
                         grants,
                         grant_embeddings=grant_embeddings,
                         embedding_service=embedding_service,
                         limit=limit,
                     )
+                    sentry_sdk.set_measurement("embedding_shortlist_used", 1.0)
+                    sentry_sdk.set_measurement("embedding_shortlist_fallback", 0.0)
+                    return shortlisted
                 except Exception as exc:
+                    sentry_sdk.set_measurement("embedding_shortlist_used", 0.0)
+                    sentry_sdk.set_measurement("embedding_shortlist_fallback", 1.0)
                     capture_backend_exception(
                         exc,
                         component="matcher",
@@ -94,6 +110,8 @@ def build_match_service(settings: Settings, app_state: AppState) -> MatchService
                             "candidate_pool": len(grants),
                         },
                     )
+        sentry_sdk.set_measurement("embedding_shortlist_used", 0.0)
+        sentry_sdk.set_measurement("embedding_shortlist_fallback", 1.0)
         return lexical_shortlist(company_description, grants, limit=limit)
 
     return MatchService(
@@ -142,6 +160,7 @@ def create_app(
     app.state.settings = active_settings
     app.state.app_state = app_state
     app.state.match_service = match_service or build_match_service(active_settings, app_state)
+    app.state.grant_detail_service = GrantDetailService(timeout_seconds=active_settings.ec_timeout_seconds)
     app.state.application_brief_service = ApplicationBriefService(
         client=build_openai_client(active_settings),
         model=active_settings.openai_match_model,
@@ -218,6 +237,19 @@ def create_app(
             return status.model_copy(update={"summary": app.state.app_state.get_index_summary()})
         return status
 
+    @app.get("/api/grants/{topic_id}", response_model=GrantDetailResponse)
+    def grant_detail(topic_id: str) -> GrantDetailResponse:
+        try:
+            return app.state.grant_detail_service.get(topic_id)
+        except LookupError as exc:
+            grants = app.state.app_state.get_grants() if hasattr(app.state.app_state, "get_grants") else []
+            fallback = next((grant for grant in grants if getattr(grant, "id", None) == topic_id), None)
+            if fallback is not None:
+                return build_grant_record_fallback(fallback)
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
     @app.post("/api/profile/resolve", response_model=ProfileResolveResponse)
     def profile_resolve(
         payload: ProfileResolveRequest,
@@ -265,22 +297,55 @@ def create_app(
             limit=app.state.settings.shortlist_limit,
             base_degradation_reasons=status.degradation_reasons,
         )
-        sentry_sdk.set_measurement("embedding_cache_hit_rate", 1.0 if status.embeddings_ready else 0.0)
+        sentry_sdk.set_measurement("grant_embeddings_available", 1.0 if status.embeddings_ready else 0.0)
         return match_response.model_copy(update={"request_id": request_id})
 
     @app.post("/api/application-brief", response_model=ApplicationBriefResponse)
-    def application_brief(payload: ApplicationBriefRequest) -> ApplicationBriefResponse:
+    def application_brief(
+        payload: ApplicationBriefRequest,
+        x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
+    ) -> ApplicationBriefResponse:
+        started_at = time.perf_counter()
+        request_id = resolve_request_id(x_request_id)
+        bind_request_context(
+            operation="application_brief",
+            request_id=request_id,
+            model=active_settings.openai_match_model if active_settings.openai_api_key else None,
+        )
         brief_service = getattr(app.state, "application_brief_service", None)
         if brief_service is None:
-            raise HTTPException(status_code=503, detail="application brief service unavailable")
+            raise HTTPException(
+                status_code=503,
+                detail=build_application_brief_error("application brief service unavailable", request_id),
+            )
         try:
-            return brief_service.generate(
+            response = brief_service.generate(
                 company_description=payload.company_description,
                 match_result=payload.match_result.model_dump(),
                 grant_detail=payload.grant_detail.model_dump(),
             )
+            sentry_sdk.set_measurement("application_brief_failed", 0.0)
+            return response.model_copy(update={"request_id": request_id})
         except Exception as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            sentry_sdk.set_measurement("application_brief_failed", 1.0)
+            capture_backend_exception(
+                exc,
+                component="application_brief",
+                operation="generate_application_brief",
+                model=active_settings.openai_match_model,
+                request_id=request_id,
+                fallback_used=False,
+                context={"grant_id": payload.match_result.grant_id},
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=build_application_brief_error(str(exc), request_id),
+            ) from exc
+        finally:
+            sentry_sdk.set_measurement(
+                "application_brief_route_latency_ms",
+                round((time.perf_counter() - started_at) * 1000, 3),
+            )
 
     @app.get("/sentry-debug")
     def sentry_debug() -> None:

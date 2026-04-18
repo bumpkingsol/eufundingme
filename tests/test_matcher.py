@@ -221,3 +221,42 @@ def test_match_service_emits_sentry_spans_and_measurements(monkeypatch):
     assert spans[1].data == {"candidate_count": 1, "matches_returned": 1}
     assert ("grants_indexed", 1) in measurements
     assert ("match_latency_ms", 250.0) in measurements
+
+
+def test_match_service_preserves_core_measurements_without_embedding_metric_shortcuts(monkeypatch):
+    grant = make_grant("TOPIC-1", "AI Safety Grant", keywords=["ai", "safety"])
+    measurements = []
+
+    monkeypatch.setattr(
+        "backend.matcher.sentry_sdk.start_span",
+        lambda **kwargs: type(
+            "Span",
+            (),
+            {
+                "__enter__": lambda self: self,
+                "__exit__": lambda self, exc_type, exc, tb: False,
+                "set_data": lambda self, key, value: None,
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        "backend.matcher.sentry_sdk.set_measurement",
+        lambda name, value: measurements.append((name, value)),
+    )
+
+    service = MatchService(
+        shortlister=lambda company_description, grants, limit: [
+            MatchCandidate(grant=grant, shortlist_score=0.9)
+        ],
+        scorer=None,
+    )
+
+    service.match(
+        "We build AI safety tooling.",
+        [grant],
+        now=datetime(2026, 4, 18, tzinfo=timezone.utc),
+    )
+
+    assert ("grants_indexed", 1) in measurements
+    assert any(name == "match_latency_ms" for name, _ in measurements)
+    assert all(name != "embedding_cache_hit_rate" for name, _ in measurements)
