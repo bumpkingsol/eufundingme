@@ -224,3 +224,27 @@ def test_app_state_builds_index_summary_from_grants(tmp_path):
     assert summary.total_budget_display == "EUR 2.0M"
     assert summary.closest_deadline == "2026-07-20"
     assert summary.closest_deadline_days == 3
+
+
+def test_snapshot_round_trip_preserves_source_language(tmp_path):
+    snapshot_path = tmp_path / "grant-index.json"
+    snapshot_store = IndexSnapshotStore(snapshot_path)
+    grant = make_grant("TOPIC-BG")
+    grant.source_language = "bg"
+
+    snapshot_store.save(
+        grants=[grant],
+        embeddings={},
+        status_payload={"phase": "ready", "message": "ready"},
+    )
+
+    envelope = snapshot_store.load()
+
+    assert envelope is not None
+    loaded = IndexSnapshotStore(snapshot_path).load()
+    assert loaded is not None
+    restored_grant = IndexSnapshotStore(snapshot_path)
+    payload = restored_grant.load()
+    assert payload is not None
+    state_grant = payload.grants[0]
+    assert state_grant["source_language"] == "bg"

@@ -11,8 +11,11 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from .application_brief import ApplicationBriefService
 from .config import Settings, load_settings
-from .embeddings import EmbeddingService, embedding_shortlist, lexical_shortlist
+from .ec_client import ECSearchClient
+from .embeddings import EmbeddingService, build_grant_embeddings, embedding_shortlist, lexical_shortlist
 from .grant_detail import GrantDetailService, build_grant_record_fallback
+from .indexer import filter_indexable_grants
+from .live_grants import LiveGrantService
 from .matcher import MatchService, OpenAIScorer
 from .models import (
     ApplicationBriefRequest,
@@ -32,6 +35,7 @@ from .observability import bind_request_context, capture_backend_exception, init
 from .openai_client import build_openai_client
 from .profile_resolver import DemoProfileResolver, OpenAICompanyProfileExpander
 from .request_ids import resolve_request_id
+from .translation import GrantTranslationService, OpenAIGrantTranslator
 from .website_profile import OpenAIWebsiteProfileGenerator, WebsiteProfileService, fetch_website_html
 from .state import AppState
 
@@ -46,7 +50,9 @@ MATCH_NOT_READY_ERROR_CODE = "INDEX_NOT_READY"
 
 
 def is_match_ready(status: IndexStatus) -> bool:
-    return status.phase in {"ready", "ready_degraded"} and status.matching_available
+    if status.phase in {"ready", "ready_degraded"}:
+        return status.matching_available
+    return status.phase == "idle" and status.live_retrieval_available
 
 
 def build_match_unavailable_error(status: IndexStatus, request_id: str | None = None) -> dict:
@@ -85,9 +91,33 @@ def build_match_service(settings: Settings, app_state: AppState) -> MatchService
         )
 
     def shortlist(company_description, grants, limit):
-        grant_embeddings = app_state.get_grant_embeddings() if embedding_service is not None else {}
+        grant_embeddings = (
+            app_state.get_grant_embeddings()
+            if embedding_service is not None and hasattr(app_state, "get_grant_embeddings")
+            else {}
+        )
         sentry_sdk.set_measurement("grant_embeddings_available", 1.0 if grant_embeddings else 0.0)
         if embedding_service is not None:
+            if grants and len(grants) <= 120:
+                missing_grants = [grant for grant in grants if grant.id not in grant_embeddings]
+                if missing_grants:
+                    try:
+                        grant_embeddings = {
+                            **grant_embeddings,
+                            **build_grant_embeddings(
+                                missing_grants,
+                                embedding_service=embedding_service,
+                            ),
+                        }
+                    except Exception as exc:
+                        capture_backend_exception(
+                            exc,
+                            component="matcher",
+                            operation="build_request_embeddings",
+                            model=embedding_service.model,
+                            fallback_used=True,
+                            context={"candidate_pool": len(grants)},
+                        )
             if grant_embeddings:
                 try:
                     shortlisted = embedding_shortlist(
@@ -137,6 +167,8 @@ def create_app(
     app_state: AppState | None = None,
     match_service: object | None = None,
     profile_resolver: object | None = None,
+    live_grant_service: object | None = None,
+    translation_service: object | None = None,
 ) -> FastAPI:
     active_settings = settings or load_settings()
     initialize_sentry(active_settings)
@@ -163,6 +195,25 @@ def create_app(
     app.state.settings = active_settings
     app.state.app_state = app_state
     app.state.match_service = match_service or build_match_service(active_settings, app_state)
+    openai_client = build_openai_client(active_settings)
+    app.state.translation_service = translation_service or GrantTranslationService(
+        translator=(
+            OpenAIGrantTranslator(
+                model=active_settings.openai_match_model,
+                client=openai_client,
+                reasoning_effort="none",
+            ).translate
+            if openai_client is not None
+            else None
+        )
+    )
+    if live_grant_service is not None:
+        app.state.live_grant_service = live_grant_service
+    elif hasattr(app_state, "client"):
+        app.state.live_grant_service = LiveGrantService(client=app_state.client)
+    else:
+        app.state.live_grant_service = None
+    app.state.live_retrieval_capability = True
     app.state.grant_detail_service = GrantDetailService(timeout_seconds=active_settings.ec_timeout_seconds)
     app.state.application_brief_service = ApplicationBriefService(
         client=build_openai_client(active_settings),
@@ -204,6 +255,15 @@ def create_app(
             generate_profile=website_profile_generator.generate,
         )
 
+    def enrich_status(status: IndexStatus) -> IndexStatus:
+        return status.model_copy(
+            update={
+                "live_retrieval_available": getattr(app.state, "live_retrieval_capability", False),
+                "embeddings_available": bool(active_settings.openai_api_key),
+                "ai_scoring_available": bool(active_settings.openai_api_key),
+            }
+        )
+
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
         return FileResponse(FRONTEND_DIR / "index.html")
@@ -233,9 +293,9 @@ def create_app(
     @app.get("/api/ready", response_model=ReadinessResponse)
     def readiness() -> ReadinessResponse | JSONResponse:
         app.state.app_state.ensure_indexing_started()
-        status = app.state.app_state.get_status()
+        status = enrich_status(app.state.app_state.get_status())
         readiness = ReadinessResponse(
-            status="ready" if status.matching_available else "not_ready",
+            status="ready" if is_match_ready(status) else "not_ready",
             phase=status.phase,
             message=status.message,
             degraded=status.degraded,
@@ -243,31 +303,36 @@ def create_app(
             snapshot_loaded=status.snapshot_loaded,
             snapshot_source=status.snapshot_source,
             refresh_in_progress=status.refresh_in_progress,
+            live_retrieval_available=status.live_retrieval_available,
+            embeddings_available=status.embeddings_available,
+            ai_scoring_available=status.ai_scoring_available,
         )
-        if status.matching_available:
+        if is_match_ready(status):
             return readiness
         return JSONResponse(status_code=503, content=readiness.model_dump())
 
     @app.get("/api/index/status", response_model=IndexStatus)
     def index_status() -> IndexStatus:
         app.state.app_state.ensure_indexing_started()
-        status = app.state.app_state.get_status()
+        status = enrich_status(app.state.app_state.get_status())
         if hasattr(app.state.app_state, "get_index_summary"):
             return status.model_copy(update={"summary": app.state.app_state.get_index_summary()})
         return status
 
     @app.get("/api/grants/{topic_id}", response_model=GrantDetailResponse)
     def grant_detail(topic_id: str) -> GrantDetailResponse:
+        grants = app.state.app_state.get_grants() if hasattr(app.state.app_state, "get_grants") else []
+        indexed_grant = next((grant for grant in grants if getattr(grant, "id", None) == topic_id), None)
         try:
-            return app.state.grant_detail_service.get(topic_id)
+            detail = app.state.grant_detail_service.get(topic_id)
         except LookupError as exc:
-            grants = app.state.app_state.get_grants() if hasattr(app.state.app_state, "get_grants") else []
-            fallback = next((grant for grant in grants if getattr(grant, "id", None) == topic_id), None)
-            if fallback is not None:
-                return build_grant_record_fallback(fallback)
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+            if indexed_grant is None:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            detail = build_grant_record_fallback(indexed_grant)
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+        return app.state.translation_service.translate_grant_detail(detail, grant=indexed_grant)
 
     @app.post("/api/profile/resolve", response_model=ProfileResolveResponse)
     def profile_resolve(
@@ -342,29 +407,62 @@ def create_app(
         x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
     ) -> MatchResponse:
         app.state.app_state.ensure_indexing_started()
+        reference_time = datetime.now(timezone.utc)
         request_id = resolve_request_id(x_request_id)
         bind_request_context(
             operation="match",
             request_id=request_id,
             model=active_settings.openai_match_model if active_settings.openai_api_key else None,
         )
-        status = app.state.app_state.get_status()
+        status = enrich_status(app.state.app_state.get_status())
         if not is_match_ready(status):
             raise HTTPException(
                 status_code=503,
                 detail=build_match_unavailable_error(status, request_id=request_id),
             )
-
-        grants = app.state.app_state.get_grants()
+        live_grant_service = getattr(app.state, "live_grant_service", None)
+        if live_grant_service is not None:
+            live_result = live_grant_service.retrieve(
+                payload.company_description,
+                now=reference_time,
+            )
+        else:
+            live_result = None
+        all_grants = (live_result.grants if live_result is not None else []) or app.state.app_state.get_grants()
+        grants = filter_indexable_grants(all_grants, now=reference_time)
+        base_reasons = list(live_result.degradation_reasons) if live_result is not None else []
+        result_source = "live_retrieval" if live_result is not None and live_result.grants else "snapshot_fallback"
+        if result_source == "snapshot_fallback":
+            base_reasons.extend(status.degradation_reasons)
+        has_ai_matching_capability = (
+            status.embeddings_ready or status.embeddings_available or status.ai_scoring_available
+        )
+        if (
+            not active_settings.openai_api_key
+            and not has_ai_matching_capability
+            and "lexical_only_mode" not in base_reasons
+        ):
+            base_reasons.append("lexical_only_mode")
         match_response = app.state.match_service.match(
             payload.company_description,
             grants,
-            now=datetime.now(timezone.utc),
+            now=reference_time,
             limit=app.state.settings.shortlist_limit,
-            base_degradation_reasons=status.degradation_reasons,
+            base_degradation_reasons=base_reasons,
         )
-        sentry_sdk.set_measurement("grant_embeddings_available", 1.0 if status.embeddings_ready else 0.0)
-        return match_response.model_copy(update={"request_id": request_id})
+        match_response = app.state.translation_service.translate_match_response(match_response, all_grants)
+        sentry_sdk.set_measurement(
+            "grant_embeddings_available",
+            1.0 if (status.embeddings_ready or status.embeddings_available) else 0.0,
+        )
+        return match_response.model_copy(
+            update={
+                "request_id": request_id,
+                "indexed_grants": len(all_grants),
+                "refresh_indexed_grants": len(all_grants),
+                "result_source": result_source,
+            }
+        )
 
     @app.post("/api/application-brief", response_model=ApplicationBriefResponse)
     def application_brief(

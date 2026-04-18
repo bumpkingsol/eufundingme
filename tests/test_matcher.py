@@ -204,6 +204,28 @@ def test_lexical_shortlist_requires_multiple_high_signal_overlaps():
     assert [candidate.grant.id for candidate in candidates] == ["TOPIC-2"]
 
 
+def test_lexical_shortlist_expands_ai_acronym_to_artificial_intelligence():
+    grants = [
+        GrantRecord(
+            id="TOPIC-1",
+            title="Trusted autonomy for Europe",
+            status="Open",
+            portal_url="https://example.com/TOPIC-1",
+            deadline="2026-08-01",
+            deadline_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+            keywords=["Artificial intelligence"],
+            framework_programme="Horizon Europe",
+            programme_division="Cluster 4",
+            search_text="trusted autonomy for europe artificial intelligence",
+        ),
+        make_grant("TOPIC-2", "Battery Materials", keywords=["battery", "recycling"]),
+    ]
+
+    candidates = lexical_shortlist("We build AI platforms.", grants, limit=5)
+
+    assert [candidate.grant.id for candidate in candidates] == ["TOPIC-1"]
+
+
 def test_match_service_clamps_ai_scores():
     grant = make_grant("TOPIC-1", "AI Safety Grant", keywords=["ai", "safety"])
 

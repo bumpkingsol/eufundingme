@@ -78,3 +78,16 @@ def test_normalize_handles_malformed_budget_without_crashing():
 
     assert record.budget_amount_eur is None
     assert record.budget_display is None
+
+
+def test_normalize_tracks_source_language():
+    metadata = {
+        "title": ["Национална програма за иновации"],
+        "identifier": ["BG-TOPIC-123"],
+        "status": ["31094501"],
+        "language": ["bg"],
+    }
+
+    record = normalize_grant(metadata)
+
+    assert record.source_language == "bg"

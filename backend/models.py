@@ -12,6 +12,7 @@ class GrantRecord:
     title: str
     status: str
     portal_url: str
+    source_language: str | None = None
     deadline: str | None = None
     deadline_at: datetime | None = field(default=None, repr=False)
     budget_display: str | None = None
@@ -38,6 +39,7 @@ class GrantRecord:
             "deadline": self.deadline,
             "days_left": self.days_left(now=now),
             "budget": self.budget_display,
+            "source_language": self.source_language,
             "keywords": self.keywords,
             "framework_programme": self.framework_programme,
             "programme_division": self.programme_division,
@@ -98,6 +100,9 @@ class MatchResult(BaseModel):
     grant_id: str
     title: str
     status: str
+    source_language: str | None = None
+    translated_from_source: bool = False
+    translation_note: str | None = None
     deadline: str | None = None
     days_left: int | None = None
     budget: str | None = None
@@ -116,6 +121,7 @@ class MatchResponse(BaseModel):
     refresh_indexed_grants: int = 0
     degraded: bool = False
     degradation_reasons: list[str] = Field(default_factory=list)
+    result_source: str = "snapshot_fallback"
     results: list[MatchResult]
 
 
@@ -144,6 +150,9 @@ class IndexStatus(BaseModel):
     snapshot_age_seconds: int | None = None
     refresh_in_progress: bool = False
     refresh_indexed_grants: int = 0
+    live_retrieval_available: bool = False
+    embeddings_available: bool = False
+    ai_scoring_available: bool = False
     summary: "IndexSummary | None" = None
 
 
@@ -163,6 +172,9 @@ class ReadinessResponse(BaseModel):
     snapshot_loaded: bool = False
     snapshot_source: str | None = None
     refresh_in_progress: bool = False
+    live_retrieval_available: bool = False
+    embeddings_available: bool = False
+    ai_scoring_available: bool = False
 
 
 class ParsedLLMMatch(BaseModel):
@@ -198,6 +210,9 @@ class GrantDocument(BaseModel):
 class GrantDetailResponse(BaseModel):
     grant_id: str
     full_description: str = ""
+    source_language: str | None = None
+    translated_from_source: bool = False
+    translation_note: str | None = None
     eligibility_criteria: list[str] = Field(default_factory=list)
     submission_deadlines: list[dict[str, str]] = Field(default_factory=list)
     expected_outcomes: list[str] = Field(default_factory=list)

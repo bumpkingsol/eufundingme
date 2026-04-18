@@ -117,6 +117,12 @@ LOW_SIGNAL_TERMS = {
 }
 
 MIN_LEXICAL_OVERLAP = 2
+TERM_EXPANSIONS = {
+    "ai": {"artificial", "intelligence"},
+    "agi": {"artificial", "general", "intelligence"},
+    "ml": {"machine", "learning"},
+    "llm": {"language", "model", "models"},
+}
 
 
 class EmbeddingService:
@@ -158,6 +164,14 @@ def informative_terms(text: str) -> set[str]:
     }
 
 
+def expanded_informative_terms(text: str) -> set[str]:
+    terms = informative_terms(text)
+    expanded = set(terms)
+    for term in terms:
+        expanded.update(TERM_EXPANSIONS.get(term, set()))
+    return expanded
+
+
 def build_lexical_haystack(grant: GrantRecord) -> str:
     return " ".join(
         part
@@ -177,13 +191,13 @@ def lexical_shortlist(
     *,
     limit: int = 15,
 ) -> list[MatchCandidate]:
-    query_terms = informative_terms(company_description)
+    query_terms = expanded_informative_terms(company_description)
     if not query_terms:
         return []
     scored: list[MatchCandidate] = []
 
     for grant in grants:
-        haystack_terms = informative_terms(build_lexical_haystack(grant))
+        haystack_terms = expanded_informative_terms(build_lexical_haystack(grant))
         overlap = query_terms & haystack_terms
         if len(overlap) < MIN_LEXICAL_OVERLAP:
             continue

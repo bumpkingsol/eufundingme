@@ -398,6 +398,14 @@ function getStatusCopy(status) {
     };
   }
 
+  if (status.live_retrieval_available && !status.snapshot_loaded) {
+    return {
+      statusMessage: "Live retrieval is ready. Matching no longer depends on a prebuilt grant index.",
+      submitMessage:
+        "Matching runs live against current EU grant search results. Cached snapshots are only used as fallback.",
+    };
+  }
+
   if (status.phase === "building") {
     return {
       statusMessage: "Indexing live grants now - first load can take a bit, progress updates below.",
@@ -515,9 +523,14 @@ function renderGrantDetail(result) {
         `<li><a href="${escapeHtml(entry.url)}" target="_blank" rel="noreferrer">${escapeHtml(entry.title)}</a></li>`,
     )
     .join("");
+  const translationNote =
+    detail.translated_from_source && detail.translation_note
+      ? `<p class="translation-note">${escapeHtml(detail.translation_note)}</p>`
+      : "";
 
   return `
     <div class="grant-detail">
+      ${translationNote}
       <div class="copy-block">
         <strong>Full description</strong>
         <span>${escapeHtml(detail.full_description || "No expanded description available yet.")}</span>
@@ -590,8 +603,12 @@ function renderResults(results, indexedGrants, matchMeta = latestMatchMeta) {
   updateDocumentTitle(results.length);
   resultsEmpty.hidden = true;
   resultsMeta.textContent = isLexicalOnlyMode(matchMeta?.degradation_reasons)
-    ? `Showing ${results.length} keyword-based results from ${indexedGrants} indexed grants. Treat scores as lower confidence.`
-    : `Showing ${results.length} best-fit results from ${indexedGrants} indexed grants.`;
+    ? matchMeta?.result_source === "live_retrieval"
+      ? `Showing ${results.length} keyword-based results from ${indexedGrants} live candidates. Treat scores as lower confidence.`
+      : `Showing ${results.length} keyword-based results from ${indexedGrants} indexed grants. Treat scores as lower confidence.`
+    : matchMeta?.result_source === "live_retrieval"
+      ? `Showing ${results.length} best-fit results from ${indexedGrants} live candidates.`
+      : `Showing ${results.length} best-fit results from ${indexedGrants} indexed grants.`;
 
   resultsList.innerHTML = results
     .map((result, index) => {
@@ -607,6 +624,10 @@ function renderResults(results, indexedGrants, matchMeta = latestMatchMeta) {
       ]
         .filter(Boolean)
         .join("");
+      const translationNote =
+        result.translated_from_source && result.translation_note
+          ? `<p class="translation-note">${escapeHtml(result.translation_note)}</p>`
+          : "";
 
       return `
         <article class="result-card" style="animation-delay: ${index * 70}ms">
@@ -627,6 +648,7 @@ function renderResults(results, indexedGrants, matchMeta = latestMatchMeta) {
           </div>
 
           <div class="result-copy">
+            ${translationNote}
             <div class="copy-block">
               <strong>Why this matches</strong>
               <span>${escapeHtml(result.why_match)}</span>
@@ -818,12 +840,16 @@ function updateStatus(status) {
     ? "keyword-only"
     : status.embeddings_ready
       ? "ready"
-      : "warming up";
+      : status.embeddings_available
+        ? "on-demand"
+        : "warming up";
   statusSource.textContent = status.snapshot_loaded
     ? status.snapshot_source === "bundled"
       ? `bundled seed snapshot (${snapshotAge} old)`
       : `saved index (${snapshotAge} old)`
-    : "live crawl";
+    : status.live_retrieval_available
+      ? "live retrieval"
+      : "live crawl";
   statusRefresh.textContent = status.refresh_in_progress
     ? status.snapshot_loaded
       ? refreshCount > 0
@@ -889,6 +915,9 @@ async function fetchStatus() {
       failed_prefixes: 0,
       truncated_prefixes: 0,
       embeddings_ready: false,
+      embeddings_available: false,
+      ai_scoring_available: false,
+      live_retrieval_available: false,
       degraded: true,
       coverage_complete: false,
       matching_available: false,
@@ -995,6 +1024,29 @@ function normalizeBool(value) {
   return null;
 }
 
+function buildTopicDetailUrl(grantId) {
+  return `https://ec.europa.eu/info/funding-tenders/opportunities/data/topicDetails/${encodeURIComponent(grantId)}.json`;
+}
+
+async function fetchGrantDetail(grantId) {
+  try {
+    const response = await fetch(`/api/grants/${encodeURIComponent(grantId)}`);
+    if (!response.ok) {
+      throw new Error("Could not load topic detail.");
+    }
+    const payload = await response.json();
+    return normalizeGrantDetailResponse(payload, grantId);
+  } catch (_error) {
+  }
+
+  const browserResponse = await fetch(buildTopicDetailUrl(grantId));
+  if (!browserResponse.ok) {
+    throw new Error("Could not load topic detail.");
+  }
+  const browserPayload = await browserResponse.json();
+  return normalizeTopicDetailPayload(browserPayload, grantId);
+}
+
 async function toggleGrantDetails(grantId) {
   if (expandedGrantIds.has(grantId)) {
     expandedGrantIds.delete(grantId);
@@ -1012,12 +1064,7 @@ async function toggleGrantDetails(grantId) {
   renderResults(latestResults, latestStatus?.indexed_grants || latestResults.length, latestMatchMeta);
 
   try {
-    const response = await fetch(`/api/grants/${encodeURIComponent(grantId)}`);
-    if (!response.ok) {
-      throw new Error("Could not load topic detail.");
-    }
-    const payload = await response.json();
-    grantDetailsById.set(grantId, normalizeGrantDetailResponse(payload, grantId));
+    grantDetailsById.set(grantId, await fetchGrantDetail(grantId));
   } catch (error) {
     console.error(error);
     grantDetailsById.set(grantId, buildFallbackGrantDetail(grantId));
@@ -1032,6 +1079,9 @@ function buildFallbackGrantDetail(grantId) {
   return {
     grant_id: grantId,
     full_description: "",
+    source_language: result?.source_language || null,
+    translated_from_source: Boolean(result?.translated_from_source),
+    translation_note: result?.translation_note || null,
     eligibility_criteria: [],
     submission_deadlines:
       result?.deadline ? [{ label: "Main deadline", value: result.deadline }] : [],
