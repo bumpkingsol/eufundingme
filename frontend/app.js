@@ -7,7 +7,9 @@ const MAX_COMPARISON_GRANTS = 3;
 
 const form = document.querySelector("#match-form");
 const descriptionInput = document.querySelector("#company-description");
+const websiteUrlInput = document.querySelector("#company-website-url");
 const matchButton = document.querySelector("#match-button");
+const generateDescriptionButton = document.querySelector("#generate-description");
 const quickFillOpenAIButton = document.querySelector("#quick-fill-openai");
 const agentHandoffCopyButton = document.querySelector("#agent-handoff-copy");
 const agentHandoffStatus = document.querySelector("#agent-handoff-status");
@@ -198,6 +200,18 @@ function setDescriptionInvalid(isInvalid) {
   descriptionInput.setAttribute("aria-invalid", isInvalid ? "true" : "false");
 }
 
+function updateWebsiteGenerationControls() {
+  if (!websiteUrlInput || !generateDescriptionButton) {
+    return;
+  }
+
+  const hasManualDescription = Boolean(descriptionInput.value.trim());
+  const hasWebsiteUrl = Boolean(websiteUrlInput.value.trim());
+
+  websiteUrlInput.disabled = hasManualDescription;
+  generateDescriptionButton.disabled = hasManualDescription || !hasWebsiteUrl;
+}
+
 function setResultsBusy(isBusy) {
   if (resultsRegion) {
     resultsRegion.setAttribute("aria-busy", isBusy ? "true" : "false");
@@ -217,10 +231,12 @@ function buildEmptyStateMarkup({ variant = "intro", title, copy, bullets = [] })
 }
 
 function showResultsEmptyState(config) {
+  const markup = buildEmptyStateMarkup(config);
   resultsList.innerHTML = "";
   resultsEmpty.hidden = false;
   resultsEmpty.className = `results-empty results-empty--${config.variant || "intro"}`;
-  resultsEmpty.innerHTML = buildEmptyStateMarkup(config);
+  resultsEmpty.innerHTML = markup;
+  resultsEmpty.textContent = [config.title, config.copy, ...(config.bullets || [])].filter(Boolean).join(" ");
 }
 
 function showIntroResultsState(message = DEFAULT_EMPTY_STATE, meta = "No search run yet.") {
@@ -267,6 +283,7 @@ function showMatchFeedback(message) {
       "If you entered only a short company name, add one or two sentences of detail.",
     ],
   });
+  resultsEmpty.textContent = message;
   resultsMeta.textContent = "No results available.";
 }
 
@@ -553,7 +570,7 @@ function renderResults(results, indexedGrants, matchMeta = latestMatchMeta) {
     if (isLexicalOnlyMode(matchMeta?.degradation_reasons)) {
       showResultsEmptyState({
         variant: "zero",
-        title: "No reliable matches yet",
+        title: "No reliable keyword matches yet",
         copy: "Keyword-only fallback is active, so the matcher is suppressing weak near-matches instead of showing misleading results.",
         bullets: zeroResultsBullets,
       });
@@ -678,6 +695,33 @@ async function resolveCompanyProfile(query) {
   return response.json();
 }
 
+async function requestWebsiteProfile(url) {
+  const journeyRequestId = ensureJourneyRequestId(buildJourneySeed(url));
+  const response = await fetch("/api/profile/from-website", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Request-ID": journeyRequestId,
+    },
+    body: JSON.stringify({ url }),
+  });
+
+  if (!response.ok) {
+    const errorPayload = await response.json().catch((error) => {
+      console.error(error);
+      return {};
+    });
+    throw new Error(getValidationMessage(errorPayload) || "Could not generate a description from the website.");
+  }
+
+  const payload = await response.json();
+  if (!payload?.resolved || !payload.profile) {
+    throw new Error("Could not generate a description from the website.");
+  }
+
+  return payload;
+}
+
 async function maybeResolveCompanyProfile(value, { source = "typing", force = false } = {}) {
   const normalizedQuery = normalizeCompanyNameInput(value);
   if (!normalizedQuery) {
@@ -713,6 +757,7 @@ async function maybeResolveCompanyProfile(value, { source = "typing", force = fa
     }
 
     descriptionInput.value = resolution.profile;
+    updateWebsiteGenerationControls();
     lastPreResolvedQuery = normalizedQuery;
     showResolutionBanner(`Expanded ${resolution.display_name || "company name"} into a full demo profile.`);
     return resolution.profile;
@@ -1078,6 +1123,38 @@ async function applyQuickFillDemoProfile() {
   }
 }
 
+async function applyWebsiteDescriptionFromUrl() {
+  const websiteUrl = websiteUrlInput.value.trim();
+  if (!websiteUrl) {
+    setFormFeedback("Add a company website URL before generating a description.", "error");
+    return;
+  }
+
+  generateDescriptionButton.disabled = true;
+  setFormFeedback("");
+  let generationFailed = false;
+  try {
+    const resolution = await requestWebsiteProfile(websiteUrl);
+    descriptionInput.value = resolution.profile;
+    setDescriptionInvalid(false);
+    hideResolutionBanner();
+    showResolutionBanner(`Generated description from ${resolution.display_name || websiteUrl}.`);
+    setFormFeedback("Description generated from website. Run matching to see ranked grant opportunities.");
+    descriptionInput.focus();
+  } catch (error) {
+    generationFailed = true;
+    console.error(error);
+    showResolutionBanner(error.message || "Could not generate a description from the website.");
+    setFormFeedback(error.message || "Could not generate a description from the website.", "error");
+  } finally {
+    updateWebsiteGenerationControls();
+    if (generationFailed) {
+      websiteUrlInput.disabled = false;
+      generateDescriptionButton.disabled = !websiteUrlInput.value.trim();
+    }
+  }
+}
+
 async function submitMatch(event) {
   event.preventDefault();
 
@@ -1085,8 +1162,11 @@ async function submitMatch(event) {
   setDescriptionInvalid(false);
   setFormFeedback("");
   if (!companyDescription) {
+    const message = "Add a company name or a short company description before matching.";
     setDescriptionInvalid(true);
-    setFormFeedback("Add a company name or a short company description before matching.", "error");
+    setFormFeedback(message, "error");
+    showMatchFeedback(message);
+    showResolutionBanner(message);
     descriptionInput.focus();
     return;
   }
@@ -1174,6 +1254,7 @@ descriptionInput.addEventListener("input", () => {
   if (formFeedback?.classList.contains("is-error")) {
     setFormFeedback("");
   }
+  updateWebsiteGenerationControls();
   if (!looksLikeCompanyNameInput(descriptionInput.value)) {
     clearPendingPreResolve();
     hideResolutionBanner();
@@ -1182,12 +1263,15 @@ descriptionInput.addEventListener("input", () => {
   scheduleCompanyResolution();
 });
 
+websiteUrlInput?.addEventListener("input", updateWebsiteGenerationControls);
+
 descriptionInput.addEventListener("blur", () => {
   clearPendingPreResolve();
   return maybeResolveCompanyProfile(descriptionInput.value, { source: "blur" });
 });
 
 quickFillOpenAIButton.addEventListener("click", applyQuickFillDemoProfile);
+generateDescriptionButton.addEventListener("click", applyWebsiteDescriptionFromUrl);
 agentHandoffCopyButton.addEventListener("click", copyAgentHandoffInstructions);
 agentHandoffDisclosure?.addEventListener("toggle", () => {
   if (agentHandoffDisclosure.open) {
@@ -1204,6 +1288,7 @@ matchButton.disabled = false;
 submitHint.textContent = getStatusCopy(null).submitMessage;
 updateDocumentTitle();
 hydrateAgentHandoff();
+updateWebsiteGenerationControls();
 form.addEventListener("submit", submitMatch);
 renderDashboardSummary(null);
 renderComparisonPanel();

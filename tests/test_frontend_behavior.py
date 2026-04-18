@@ -32,6 +32,37 @@ class FakeElement {{
     this.hidden = false;
     this.disabled = false;
     this.style = {{}};
+    this.dataset = {{}};
+    this.classList = {{
+      _values: new Set(),
+      add: (...tokens) => {{
+        for (const token of tokens) {{
+          this.classList._values.add(token);
+        }}
+      }},
+      remove: (...tokens) => {{
+        for (const token of tokens) {{
+          this.classList._values.delete(token);
+        }}
+      }},
+      contains: (token) => this.classList._values.has(token),
+      toggle: (token, force) => {{
+        if (force === undefined) {{
+          if (this.classList._values.has(token)) {{
+            this.classList._values.delete(token);
+            return false;
+          }}
+          this.classList._values.add(token);
+          return true;
+        }}
+        if (force) {{
+          this.classList._values.add(token);
+          return true;
+        }}
+        this.classList._values.delete(token);
+        return false;
+      }},
+    }};
     this.listeners = new Map();
   }}
 
@@ -60,14 +91,29 @@ class FakeElement {{
   focus() {{
     this.focused = true;
   }}
+
+  select() {{
+    this.selected = true;
+  }}
+
+  setAttribute(name, value) {{
+    this[name] = String(value);
+  }}
+
+  removeAttribute(name) {{
+    delete this[name];
+  }}
 }}
 
 const elements = new Map();
 const selectorIds = [
   "match-form",
   "company-description",
+  "company-website-url",
   "match-button",
+  "generate-description",
   "quick-fill-openai",
+  "form-feedback",
   "dashboard-total-grants",
   "dashboard-programmes",
   "dashboard-budget",
@@ -165,6 +211,7 @@ async function flushTimers(maxSteps = 1) {{
 
 const fetchCalls = [];
 const profileResolvers = [];
+const websiteProfileResolvers = [];
 const detailResponses = new Map();
 let statusResponse = {{
   ok: true,
@@ -212,6 +259,12 @@ async function fetchMock(url, options = {{}}) {{
       throw new Error("No profile resolver queued");
     }}
     return profileResolvers.shift()(url, options);
+  }}
+  if (url === "/api/profile/from-website") {{
+    if (!websiteProfileResolvers.length) {{
+      throw new Error("No website profile resolver queued");
+    }}
+    return websiteProfileResolvers.shift()(url, options);
   }}
   if (url === "/api/match") {{
     return matchResponse;
@@ -266,7 +319,9 @@ const appContext = context;
 
 const form = elements.get("match-form");
 const descriptionInput = elements.get("company-description");
+const websiteInput = elements.get("company-website-url");
 const matchButton = elements.get("match-button");
+const generateDescriptionButton = elements.get("generate-description");
 const quickFillButton = elements.get("quick-fill-openai");
 const handoffCopyButton = elements.get("agent-handoff-copy");
 const handoffStatus = elements.get("agent-handoff-status");
@@ -281,9 +336,14 @@ const comparisonTable = elements.get("comparison-table");
 const alertForm = elements.get("alert-form");
 const alertEmail = elements.get("alert-email");
 const alertStatus = elements.get("alert-status");
+const formFeedback = elements.get("form-feedback");
 
 function queueProfileResponse(factory) {{
   profileResolvers.push(factory);
+}}
+
+function queueWebsiteProfileResponse(factory) {{
+  websiteProfileResolvers.push(factory);
 }}
 
 function queueDetailResponse(topicId, payload) {{
@@ -353,6 +413,59 @@ if (resolutionBanner.hidden) {
 }
 if (!resolutionBanner.textContent.includes("Expanded OpenAI")) {
   throw new Error(`Unexpected banner copy: ${resolutionBanner.textContent}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_locks_website_generation_when_description_is_manual_and_unlocks_on_clear():
+    script = build_frontend_harness(
+        """
+websiteInput.value = "sentry.io";
+await websiteInput.dispatch("input");
+
+descriptionInput.value = "We build AI safety tooling for enterprise deployment across Europe.";
+await descriptionInput.dispatch("input");
+
+if (!websiteInput.disabled) {
+  throw new Error("Expected website input to be disabled when description is manual");
+}
+if (!generateDescriptionButton.disabled) {
+  throw new Error("Expected generate button to be disabled when description is manual");
+}
+
+descriptionInput.value = "";
+await descriptionInput.dispatch("input");
+
+if (websiteInput.disabled) {
+  throw new Error("Expected website input to re-enable after clearing description");
+}
+if (generateDescriptionButton.disabled) {
+  throw new Error("Expected generate button to enable when website URL is present and description is empty");
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_enables_generate_button_when_website_url_has_content_and_description_is_empty():
+    script = build_frontend_harness(
+        """
+websiteInput.value = "https://example.com";
+await websiteInput.dispatch("input");
+
+if (websiteInput.disabled) {
+  throw new Error("Expected website input to remain enabled with an empty description");
+}
+if (generateDescriptionButton.disabled) {
+  throw new Error("Expected generate button to enable when website URL has content");
 }
 """
     )
@@ -473,6 +586,103 @@ if (descriptionInput.value !== "OpenAI full profile from quick fill.") {
 }
 if (resolutionBanner.hidden) {
   throw new Error("Expected resolution banner to be visible");
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_generate_description_populates_description_and_shows_success_state():
+    script = build_frontend_harness(
+        """
+queueWebsiteProfileResponse(
+  profileJsonResponse({
+    resolved: true,
+    profile: "Sentry builds developer observability tooling.",
+    display_name: "Sentry",
+    source: "website_profile",
+    normalized_url: "https://sentry.io",
+    message: null,
+  }),
+);
+
+websiteInput.value = "sentry.io";
+await websiteInput.dispatch("input");
+await generateDescriptionButton.dispatch("click");
+
+const websiteCalls = fetchCalls.filter((call) => call.url === "/api/profile/from-website");
+if (websiteCalls.length !== 1) {
+  throw new Error(`Expected 1 website profile call, got ${websiteCalls.length}`);
+}
+
+const requestBody = JSON.parse(websiteCalls[0].options.body);
+if (requestBody.url !== "sentry.io") {
+  throw new Error(`Unexpected website request body: ${requestBody.url}`);
+}
+if (descriptionInput.value !== "Sentry builds developer observability tooling.") {
+  throw new Error(`Generate flow did not populate description: ${descriptionInput.value}`);
+}
+if (!websiteInput.disabled) {
+  throw new Error("Expected website input to lock after generating a description");
+}
+if (!generateDescriptionButton.disabled) {
+  throw new Error("Expected generate button to lock after generating a description");
+}
+if (formFeedback.hidden) {
+  throw new Error("Expected success feedback to be visible");
+}
+if (!formFeedback.textContent.includes("generated from website")) {
+  throw new Error(`Unexpected success feedback: ${formFeedback.textContent}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_generate_description_failure_keeps_description_and_shows_error():
+    script = build_frontend_harness(
+        """
+queueWebsiteProfileResponse(async () => ({
+  ok: false,
+  json: async () => ({
+    detail: {
+      message: "website profile generation failed",
+    },
+  }),
+}));
+
+descriptionInput.value = "Existing manual description.";
+websiteInput.value = "sentry.io";
+await websiteInput.dispatch("input");
+await generateDescriptionButton.dispatch("click");
+
+const websiteCalls = fetchCalls.filter((call) => call.url === "/api/profile/from-website");
+if (websiteCalls.length !== 1) {
+  throw new Error(`Expected 1 website profile call, got ${websiteCalls.length}`);
+}
+if (descriptionInput.value !== "Existing manual description.") {
+  throw new Error(`Failure flow overwrote description: ${descriptionInput.value}`);
+}
+if (websiteInput.disabled) {
+  throw new Error("Expected website input to remain editable after failure");
+}
+if (generateDescriptionButton.disabled) {
+  throw new Error("Expected generate button to be re-enabled after failure");
+}
+if (formFeedback.hidden) {
+  throw new Error("Expected error feedback to be visible");
+}
+if (!formFeedback.classList.contains("is-error")) {
+  throw new Error("Expected error feedback to use error styling");
+}
+if (!formFeedback.textContent.includes("website profile generation failed")) {
+  throw new Error(`Unexpected error feedback: ${formFeedback.textContent}`);
 }
 """
     )

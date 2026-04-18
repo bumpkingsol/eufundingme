@@ -89,6 +89,20 @@
                   One click loads the demo profile, or type a company name like <code>OpenAI</code> and we auto-expand it.
                 </p>
               </div>
+              <div class="alert-form">
+                <label class="sr-only" for="company-website-url">Company website URL</label>
+                <input
+                  id="company-website-url"
+                  name="company-website-url"
+                  type="url"
+                  placeholder="company.com"
+                  autocomplete="url"
+                  inputmode="url"
+                />
+                <button id="generate-description" type="button" class="secondary-button" disabled>
+                  Generate description
+                </button>
+              </div>
               <p id="resolution-banner" class="submit-hint" hidden></p>
               <textarea
                 id="company-description"
