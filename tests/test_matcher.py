@@ -35,6 +35,29 @@ def test_lexical_shortlist_prefers_overlap():
     assert [candidate.grant.id for candidate in candidates] == ["TOPIC-1"]
 
 
+def test_lexical_shortlist_ignores_stopwords_and_generic_business_terms():
+    grants = [
+        make_grant(
+            "TOPIC-1",
+            "Trustworthy Foundation Models for European Industry",
+            keywords=["ai", "foundation models", "safety", "enterprise"],
+        ),
+        make_grant(
+            "TOPIC-2",
+            "Support to Dissemination and Exploitation for the Digital Europe Programme",
+            keywords=["solutions", "digital"],
+        ),
+    ]
+
+    candidates = lexical_shortlist(
+        "We build enterprise healthcare solutions for companies and governments across the EU",
+        grants,
+        limit=5,
+    )
+
+    assert candidates == []
+
+
 def test_match_service_clamps_ai_scores():
     grant = make_grant("TOPIC-1", "AI Safety Grant", keywords=["ai", "safety"])
 

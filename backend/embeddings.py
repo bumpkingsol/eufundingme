@@ -9,6 +9,60 @@ from openai import OpenAI
 from .models import GrantRecord, MatchCandidate
 
 TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
+STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "by",
+    "for",
+    "from",
+    "in",
+    "into",
+    "is",
+    "of",
+    "on",
+    "or",
+    "our",
+    "that",
+    "the",
+    "to",
+    "we",
+    "with",
+    "across",
+}
+LOW_SIGNAL_TERMS = {
+    "build",
+    "building",
+    "business",
+    "businesses",
+    "company",
+    "companies",
+    "enterprise",
+    "enterprises",
+    "eu",
+    "europe",
+    "european",
+    "government",
+    "governments",
+    "industry",
+    "industries",
+    "organisation",
+    "organisations",
+    "organization",
+    "organizations",
+    "programme",
+    "programmes",
+    "program",
+    "programs",
+    "sector",
+    "sectors",
+    "solution",
+    "solutions",
+}
 
 
 class EmbeddingService:
@@ -42,17 +96,27 @@ def tokenize_terms(text: str) -> set[str]:
     return {match.group(0) for match in TOKEN_PATTERN.finditer(text.lower())}
 
 
+def informative_terms(text: str) -> set[str]:
+    return {
+        term
+        for term in tokenize_terms(text)
+        if term not in STOPWORDS and term not in LOW_SIGNAL_TERMS
+    }
+
+
 def lexical_shortlist(
     company_description: str,
     grants: Sequence[GrantRecord],
     *,
     limit: int = 15,
 ) -> list[MatchCandidate]:
-    query_terms = tokenize_terms(company_description)
+    query_terms = informative_terms(company_description)
+    if not query_terms:
+        return []
     scored: list[MatchCandidate] = []
 
     for grant in grants:
-        haystack_terms = tokenize_terms(grant.search_text or grant.title)
+        haystack_terms = informative_terms(grant.search_text or grant.title)
         overlap = query_terms & haystack_terms
         if not overlap:
             continue

@@ -134,6 +134,13 @@ function updateDocumentTitle(resultCount = 0) {
   document.title = resultCount > 0 ? `${resultCount} Grants Found | ${DEFAULT_TITLE}` : DEFAULT_TITLE;
 }
 
+function getEffectiveIndexedGrantCount(status, summary = null) {
+  const summaryCount = Number(summary?.total_grants || 0);
+  const indexedCount = Number(status?.indexed_grants || 0);
+  const refreshCount = Number(status?.refresh_indexed_grants || 0);
+  return Math.max(summaryCount, indexedCount, refreshCount);
+}
+
 function hydrateAgentHandoff() {
   agentHandoffInstructions.value = AGENT_HANDOFF_INSTRUCTIONS;
 }
@@ -161,6 +168,15 @@ function showResolutionBanner(text) {
 function hideResolutionBanner() {
   resolutionBanner.hidden = true;
   resolutionBanner.textContent = "";
+}
+
+function showMatchFeedback(message) {
+  showResolutionBanner(message);
+  updateDocumentTitle();
+  resultsEmpty.hidden = false;
+  resultsEmpty.textContent = message;
+  resultsList.innerHTML = "";
+  resultsMeta.textContent = "No results available.";
 }
 
 function normalizeCompanyNameInput(value) {
@@ -289,11 +305,16 @@ function getStatusCopy(status) {
   };
 }
 
-function renderDashboardSummary(summary) {
+function renderDashboardSummary(summary, status = null) {
   if (!dashboardTotalGrants) {
     return;
   }
-  dashboardTotalGrants.textContent = summary?.total_grants ? `${summary.total_grants} grants indexed` : "0 grants indexed";
+  const effectiveGrantCount = getEffectiveIndexedGrantCount(status, summary);
+  if (status?.refresh_in_progress && status?.snapshot_loaded && effectiveGrantCount > Number(summary?.total_grants || 0)) {
+    dashboardTotalGrants.textContent = `${effectiveGrantCount} grants found so far`;
+  } else {
+    dashboardTotalGrants.textContent = effectiveGrantCount ? `${effectiveGrantCount} grants indexed` : "0 grants indexed";
+  }
   dashboardProgrammes.textContent = summary?.programme_count ? `${summary.programme_count} programmes` : "0 programmes";
   dashboardBudget.textContent = summary?.total_budget_display
     ? `${summary.total_budget_display} total available`
@@ -578,6 +599,7 @@ function scheduleCompanyResolution() {
 
 function updateStatus(status) {
   latestStatus = status;
+  const effectiveGrantCount = getEffectiveIndexedGrantCount(status, status.summary);
   const totalPrefixes = status.total_prefixes || 0;
   const scannedPrefixes = status.scanned_prefixes || 0;
   const ratio = totalPrefixes ? Math.max(8, Math.round((scannedPrefixes / totalPrefixes) * 100)) : 8;
@@ -595,7 +617,7 @@ function updateStatus(status) {
 
   statusCopy.textContent = statusCopyText.statusMessage;
   statusPhase.textContent = status.phase;
-  statusCount.textContent = String(status.indexed_grants || 0);
+  statusCount.textContent = String(effectiveGrantCount || 0);
   statusPrefixes.textContent = `${scannedPrefixes} / ${totalPrefixes}`;
   statusFailures.textContent = String(failedPrefixes + truncatedPrefixes);
   statusCoverage.textContent = coverageLabel;
@@ -618,7 +640,7 @@ function updateStatus(status) {
     matchButton.disabled = false;
   }
   submitHint.textContent = statusCopyText.submitMessage;
-  renderDashboardSummary(status.summary);
+  renderDashboardSummary(status.summary, status);
 
   if (status.degraded && status.degradation_reasons?.length) {
     statusDegraded.hidden = false;
@@ -890,6 +912,7 @@ async function submitMatch(event) {
 
   let companyDescription = descriptionInput.value.trim();
   if (!companyDescription) {
+    showMatchFeedback("Add a company name or a short company description before matching.");
     descriptionInput.focus();
     return;
   }
@@ -936,11 +959,7 @@ async function submitMatch(event) {
     const payload = await response.json();
     renderResults(payload.results || [], payload.indexed_grants || 0);
   } catch (error) {
-    updateDocumentTitle();
-    resultsEmpty.hidden = false;
-    resultsEmpty.textContent = error.message || "Matching failed.";
-    resultsList.innerHTML = "";
-    resultsMeta.textContent = "No results available.";
+    showMatchFeedback(error.message || "Matching failed.");
   } finally {
     matchButton.textContent = "Find Grants";
     matchButton.disabled = false;

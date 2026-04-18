@@ -41,57 +41,36 @@
             <span>Application angle included</span>
           </div>
 
-          <section class="hero-stats" aria-label="Index summary">
-            <span id="dashboard-total-grants">0 grants indexed</span>
-            <span id="dashboard-programmes">0 programmes</span>
-            <span id="dashboard-budget">Budget pending</span>
-            <span id="dashboard-deadline">Closest deadline: —</span>
-          </section>
-
-          <section class="cli-callout">
-            <p class="submit-hint">
-              Agents and automations can use CLI mode:
-              <code>eufundingme match --description "...";</code>
-              with JSON output by default, plus <code>eufundingme index</code> and
-              <code>eufundingme status</code>.
-            </p>
-            <p class="submit-hint">
-              Install fallback: <code>python -m backend.cli ...</code>.
-              Resolve names with:
-              <code>eufundingme profile --query "OpenAI"</code>.
-            </p>
-            <p class="submit-hint">
-              Use <code>python -m backend.cli health</code> for agent preflight checks.
-            </p>
-
-            <section class="agent-handoff" aria-labelledby="agent-handoff-title">
-              <div class="agent-handoff-head">
-                <div>
-                  <p class="eyebrow">Agent Handoff</p>
-                  <h2 id="agent-handoff-title">Copy Instructions for an External Agent</h2>
-                </div>
-                <button id="agent-handoff-copy" class="secondary-button" type="button">Copy Instructions</button>
+          <section class="agent-handoff" aria-labelledby="agent-handoff-title">
+            <div class="agent-handoff-head">
+              <div>
+                <p class="eyebrow">Agent Handoff</p>
+                <h2 id="agent-handoff-title">Copy Instructions for an External Agent</h2>
               </div>
-              <p class="submit-hint">
-                Paste this into Telegram or another agent chat so the agent can install, verify, and use the CLI tool on its own.
-              </p>
-              <p class="submit-hint">
-                The copied brief tells the agent to use <code>eufundingme</code>, preserve <code>request_id</code>, and surface
-                <code>INDEX_NOT_READY</code>, <code>MATCH_TIMEOUT</code>, or <code>INTERNAL_ERROR</code> verbatim.
-              </p>
-              <details id="agent-handoff-disclosure" class="agent-handoff-disclosure">
-                <summary>Show instructions</summary>
-                <div class="agent-handoff-body">
-                  <textarea
-                    id="agent-handoff-instructions"
-                    class="agent-handoff-text"
-                    readonly
-                    aria-label="Agent handoff instructions"
-                  ></textarea>
-                  <p id="agent-handoff-status" class="submit-hint">Expand this block to copy and paste it into your agent chat.</p>
-                </div>
-              </details>
-            </section>
+              <button id="agent-handoff-copy" class="secondary-button" type="button">Copy Instructions</button>
+            </div>
+            <p class="submit-hint">
+              Paste this into Telegram or another agent chat so the agent can install, verify, and use the CLI tool on its own.
+            </p>
+            <p class="submit-hint">
+              The copied brief tells the agent to use <code>eufundingme</code>, preserve <code>request_id</code>, and surface
+              <code>INDEX_NOT_READY</code>, <code>MATCH_TIMEOUT</code>, or <code>INTERNAL_ERROR</code> verbatim.
+            </p>
+            <p class="submit-hint">
+              CLI fallback remains available via <code>python -m backend.cli match --description "..."</code>.
+            </p>
+            <details id="agent-handoff-disclosure" class="agent-handoff-disclosure">
+              <summary>Show instructions</summary>
+              <div class="agent-handoff-body">
+                <textarea
+                  id="agent-handoff-instructions"
+                  class="agent-handoff-text"
+                  readonly
+                  aria-label="Agent handoff instructions"
+                ></textarea>
+                <p id="agent-handoff-status" class="submit-hint">Expand this block to copy and paste it into your agent chat.</p>
+              </div>
+            </details>
           </section>
         </section>
 

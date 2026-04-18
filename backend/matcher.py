@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import sentry_sdk
 from openai import OpenAI
 
-from .embeddings import lexical_shortlist
+from .embeddings import informative_terms, lexical_shortlist
 from .models import (
     GrantRecord,
     MatchCandidate,
@@ -208,12 +208,16 @@ def build_fallback_results(
     *,
     now: datetime,
 ) -> list[MatchResult]:
-    company_terms = set(company_description.lower().split())
+    company_terms = informative_terms(company_description)
     results: list[MatchResult] = []
 
     for candidate in candidates:
         grant = candidate.grant
-        matched_keywords = [keyword for keyword in grant.keywords if keyword.lower() in company_terms]
+        matched_keywords = [
+            keyword
+            for keyword in grant.keywords
+            if informative_terms(keyword) & company_terms
+        ]
         normalized_shortlist_score = candidate.shortlist_score
         if normalized_shortlist_score > 1:
             normalized_shortlist_score = min(normalized_shortlist_score / 5, 1)

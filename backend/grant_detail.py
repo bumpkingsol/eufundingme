@@ -3,7 +3,13 @@ from __future__ import annotations
 import re
 from html import unescape
 
-from .models import GrantDetailResponse
+import requests
+
+from .models import GrantDetailResponse, GrantRecord
+
+TOPIC_DETAILS_URL_TEMPLATE = (
+    "https://ec.europa.eu/info/funding-tenders/opportunities/data/topicDetails/{topic_id}.json"
+)
 
 TAG_PATTERN = re.compile(r"<[^>]+>")
 LIST_ITEM_PATTERN = re.compile(r"<li[^>]*>(.*?)</li>", flags=re.IGNORECASE | re.DOTALL)
@@ -44,7 +50,7 @@ def build_fallback_grant_detail(match_result: dict[str, object]) -> GrantDetailR
     deadline = match_result.get("deadline")
     return GrantDetailResponse(
         grant_id=str(match_result.get("grant_id") or ""),
-        full_description="",
+        full_description=str(match_result.get("description") or ""),
         eligibility_criteria=[],
         submission_deadlines=(
             [{"label": "Main deadline", "value": deadline}]
@@ -55,6 +61,24 @@ def build_fallback_grant_detail(match_result: dict[str, object]) -> GrantDetailR
         documents=[],
         partner_search_available=None,
         source="match_result_fallback",
+        fallback_used=True,
+    )
+
+
+def build_grant_record_fallback(grant: GrantRecord) -> GrantDetailResponse:
+    return GrantDetailResponse(
+        grant_id=grant.id,
+        full_description=grant.description or "",
+        eligibility_criteria=[],
+        submission_deadlines=(
+            [{"label": "Main deadline", "value": grant.deadline}]
+            if isinstance(grant.deadline, str) and grant.deadline
+            else []
+        ),
+        expected_outcomes=[],
+        documents=[],
+        partner_search_available=None,
+        source="indexed_grant_fallback",
         fallback_used=True,
     )
 
@@ -128,3 +152,28 @@ def _date_only(value: object) -> str | None:
     if not isinstance(value, str) or not value:
         return None
     return value[:10]
+
+
+class GrantDetailService:
+    def __init__(
+        self,
+        *,
+        session: requests.Session | None = None,
+        timeout_seconds: float = 30.0,
+    ) -> None:
+        self.session = session or requests.Session()
+        self.timeout_seconds = timeout_seconds
+
+    def get(self, topic_id: str) -> GrantDetailResponse:
+        response = self.session.get(
+            TOPIC_DETAILS_URL_TEMPLATE.format(topic_id=topic_id),
+            timeout=self.timeout_seconds,
+        )
+        if response.status_code == 404:
+            raise LookupError(f"no grant detail found for {topic_id}")
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise LookupError(f"no grant detail found for {topic_id}")
+        detail = normalize_topic_detail_payload(payload, topic_id=topic_id)
+        return detail.model_copy(update={"source": "topic_detail_json"})

@@ -470,6 +470,37 @@ if (resolutionBanner.hidden) {
     assert result.returncode == 0, result.stderr
 
 
+def test_frontend_empty_submit_shows_validation_feedback_without_api_calls():
+    script = build_frontend_harness(
+        """
+await form.dispatch("submit");
+
+const actionCalls = fetchCalls.filter((call) =>
+  ["/api/profile/resolve", "/api/match"].includes(call.url)
+);
+if (actionCalls.length !== 0) {
+  throw new Error(`Expected no action calls, got ${actionCalls.length}`);
+}
+if (resolutionBanner.hidden) {
+  throw new Error("Expected validation banner to be visible");
+}
+if (!resolutionBanner.textContent.includes("Add a company name")) {
+  throw new Error(`Unexpected validation banner copy: ${resolutionBanner.textContent}`);
+}
+if (!resultsEmpty.textContent.includes("Add a company name")) {
+  throw new Error(`Unexpected empty state copy: ${resultsEmpty.textContent}`);
+}
+if (resultsMeta.textContent !== "No results available.") {
+  throw new Error(`Unexpected results meta: ${resultsMeta.textContent}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_frontend_reuses_one_request_id_across_journey_calls():
     script = build_frontend_harness(
         """
@@ -886,6 +917,50 @@ if (elements.get("dashboard-budget").textContent !== "EUR 380M total available")
 }
 if (elements.get("dashboard-deadline").textContent !== "Closest deadline: 3 days") {
   throw new Error(`Unexpected deadline summary: ${elements.get("dashboard-deadline").textContent}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_prefers_live_refresh_count_over_seed_snapshot_count():
+    script = build_frontend_harness(
+        """
+const status = {
+  phase: "ready_degraded",
+  message: "Using bundled seed snapshot while live refresh runs",
+  indexed_grants: 2,
+  refresh_indexed_grants: 44,
+  scanned_prefixes: 4,
+  total_prefixes: 46,
+  failed_prefixes: 0,
+  truncated_prefixes: 0,
+  embeddings_ready: false,
+  matching_available: true,
+  coverage_complete: false,
+  degraded: true,
+  degradation_reasons: ["bundled_seed_mode"],
+  snapshot_loaded: true,
+  snapshot_source: "bundled",
+  refresh_in_progress: true,
+  summary: {
+    total_grants: 2,
+    programme_count: 2,
+    total_budget_display: "EUR 9M",
+    closest_deadline_days: 7,
+  },
+};
+
+appContext.updateStatus(status);
+
+if (elements.get("status-count").textContent !== "44") {
+  throw new Error(`Unexpected live status count: ${elements.get("status-count").textContent}`);
+}
+if (elements.get("dashboard-total-grants").textContent !== "44 grants found so far") {
+  throw new Error(`Unexpected dashboard grants copy: ${elements.get("dashboard-total-grants").textContent}`);
 }
 """
     )
