@@ -13,6 +13,7 @@ SENTRY_RELEASE_CI_ENV_VARS = (
     "RENDER_GIT_COMMIT",
 )
 DOTENV_FILENAMES = (".env", ".env.local")
+CONFIG_ROOT = Path(__file__).resolve().parent.parent
 
 
 @dataclass(slots=True)
@@ -67,9 +68,8 @@ def _parse_dotenv_file(path: Path) -> dict[str, str]:
 
 def _load_dotenv_values() -> dict[str, str]:
     loaded: dict[str, str] = {}
-    current_dir = Path.cwd()
     for filename in DOTENV_FILENAMES:
-        loaded.update(_parse_dotenv_file(current_dir / filename))
+        loaded.update(_parse_dotenv_file(CONFIG_ROOT / filename))
     return loaded
 
 
