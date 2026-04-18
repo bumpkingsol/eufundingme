@@ -86,6 +86,7 @@ class ApplicationBriefService:
                     raise RuntimeError("brief generation failed")
 
             sections = ApplicationBriefSections.model_validate(parsed.model_dump())
+            sections = _apply_detail_note(sections, request.grant_detail.detail_note)
             sentry_sdk.set_measurement("application_brief_fallback_used", 0.0)
             sentry_sdk.set_measurement("application_brief_failed", 0.0)
             return build_application_brief_response(
@@ -123,6 +124,7 @@ class ApplicationBriefService:
                 "Need named partners and implementation evidence",
             ],
         )
+        sections = _apply_detail_note(sections, detail.detail_note)
         return build_application_brief_response(
             match_title=request.match_result.title,
             sections=sections,
@@ -191,3 +193,14 @@ def _build_timeline(detail) -> list[str]:
         "Week 2: lock evidence pack and partner roles",
         "Final week: finalise impact, budget, and compliance sections",
     ]
+
+
+def _apply_detail_note(
+    sections: ApplicationBriefSections,
+    detail_note: str | None,
+) -> ApplicationBriefSections:
+    if not detail_note:
+        return sections
+    if detail_note in sections.risks_and_gaps:
+        return sections
+    return sections.model_copy(update={"risks_and_gaps": [*sections.risks_and_gaps, detail_note]})

@@ -146,6 +146,12 @@ function getEffectiveIndexedGrantCount(status, summary = null) {
   return Math.max(summaryCount, indexedCount, refreshCount);
 }
 
+function getCachedCorpusCount(status, summary = null) {
+  const summaryCount = Number(summary?.total_grants || 0);
+  const indexedCount = Number(status?.indexed_grants || 0);
+  return Math.max(summaryCount, indexedCount);
+}
+
 function getRefreshProgressCount(status) {
   return Number(status?.refresh_indexed_grants || 0);
 }
@@ -387,14 +393,14 @@ function getStatusCopy(status) {
     return {
       statusMessage: "Running with cached data while the live refresh catches up.",
       submitMessage:
-        "Bundled snapshot is live for the demo while the exhaustive live refresh continues in the background.",
+        "The cached corpus is live for the demo while a smaller active-grants refresh continues in the background.",
     };
   }
 
   if (status.snapshot_loaded && status.refresh_in_progress) {
     return {
       statusMessage: "Running with cached data while the live refresh catches up.",
-      submitMessage: "Cached results are live while the exhaustive live refresh continues in the background.",
+      submitMessage: "The cached corpus is live now while the active grant refresh continues in the background.",
     };
   }
 
@@ -445,12 +451,10 @@ function renderDashboardSummary(summary, status = null) {
     return;
   }
   const effectiveGrantCount = getEffectiveIndexedGrantCount(status, summary);
-  const summaryCount = Number(summary?.total_grants || 0);
+  const cachedCorpusCount = getCachedCorpusCount(status, summary);
   const refreshCount = getRefreshProgressCount(status);
-  if (status?.refresh_in_progress && status?.snapshot_loaded && refreshCount > 0 && refreshCount < summaryCount) {
-    dashboardTotalGrants.textContent = `${summaryCount} grants indexed · ${refreshCount} found in live refresh`;
-  } else if (status?.refresh_in_progress && status?.snapshot_loaded && effectiveGrantCount > summaryCount) {
-    dashboardTotalGrants.textContent = `${effectiveGrantCount} grants found so far`;
+  if (status?.refresh_in_progress && status?.snapshot_loaded && refreshCount > 0) {
+    dashboardTotalGrants.textContent = `${cachedCorpusCount} cached records ready · ${refreshCount} active grants found in live refresh`;
   } else {
     dashboardTotalGrants.textContent = effectiveGrantCount ? `${effectiveGrantCount} grants indexed` : "0 grants indexed";
   }
@@ -535,10 +539,14 @@ function renderGrantDetail(result) {
     detail.translated_from_source && detail.translation_note
       ? `<p class="translation-note">${escapeHtml(detail.translation_note)}</p>`
       : "";
+  const detailNote = detail.detail_note
+    ? `<p class="translation-note">${escapeHtml(detail.detail_note)}</p>`
+    : "";
 
   return `
     <div class="grant-detail">
       ${translationNote}
+      ${detailNote}
       <div class="copy-block">
         <strong>Full description</strong>
         <span>${escapeHtml(detail.full_description || "No expanded description available yet.")}</span>
@@ -613,10 +621,10 @@ function renderResults(results, indexedGrants, matchMeta = latestMatchMeta) {
   resultsMeta.textContent = isLexicalOnlyMode(matchMeta?.degradation_reasons)
     ? matchMeta?.result_source === "live_retrieval"
       ? `Showing ${results.length} keyword-based results from ${indexedGrants} live candidates. Treat scores as lower confidence.`
-      : `Showing ${results.length} keyword-based results from ${indexedGrants} indexed grants. Treat scores as lower confidence.`
+      : `Showing ${results.length} keyword-based results from the cached corpus while the live active index refresh continues. Treat scores as lower confidence.`
     : matchMeta?.result_source === "live_retrieval"
       ? `Showing ${results.length} best-fit results from ${indexedGrants} live candidates.`
-      : `Showing ${results.length} best-fit results from ${indexedGrants} indexed grants.`;
+      : `Showing ${results.length} best-fit results from the cached corpus while the live active index refresh continues.`;
 
   resultsList.innerHTML = results
     .map((result, index) => {
@@ -822,6 +830,7 @@ function scheduleCompanyResolution() {
 function updateStatus(status) {
   latestStatus = status;
   const effectiveGrantCount = getEffectiveIndexedGrantCount(status, status.summary);
+  const cachedCorpusCount = getCachedCorpusCount(status, status.summary);
   const refreshCount = getRefreshProgressCount(status);
   const totalPrefixes = status.total_prefixes || 0;
   const scannedPrefixes = status.scanned_prefixes || 0;
@@ -840,7 +849,9 @@ function updateStatus(status) {
 
   statusCopy.textContent = statusCopyText.statusMessage;
   statusPhase.textContent = status.phase;
-  statusCount.textContent = String(effectiveGrantCount || 0);
+  statusCount.textContent = String(
+    status.snapshot_loaded && status.snapshot_source === "bundled" ? cachedCorpusCount || 0 : effectiveGrantCount || 0,
+  );
   statusPrefixes.textContent = `${scannedPrefixes} / ${totalPrefixes}`;
   statusFailures.textContent = String(failedPrefixes + truncatedPrefixes);
   statusCoverage.textContent = coverageLabel;
@@ -861,7 +872,7 @@ function updateStatus(status) {
   statusRefresh.textContent = status.refresh_in_progress
     ? status.snapshot_loaded
       ? refreshCount > 0
-        ? `refreshing in background · ${refreshCount} found so far`
+        ? `refreshing in background · ${refreshCount} active grants found in live refresh`
         : "refreshing in background"
       : "building live index"
     : "idle";
@@ -881,8 +892,8 @@ function updateStatus(status) {
     statusDegraded.textContent = isLexicalOnlyMode(status.degradation_reasons)
       ? "Keyword-only matching is active because OpenAI is unavailable. Treat scores as lower confidence and add domain-specific detail for better results."
       : isBundledSeedMode(status.degradation_reasons)
-        ? "Running with cached data while the live refresh completes in the background."
-      : `Degraded mode: ${humanizeReasons(status.degradation_reasons).join(", ")}.`;
+        ? "Running with the cached corpus while a smaller active/open grant refresh completes in the background."
+        : `Degraded mode: ${humanizeReasons(status.degradation_reasons).join(", ")}.`;
   } else {
     statusDegraded.hidden = true;
     statusDegraded.textContent = "";
@@ -1046,7 +1057,12 @@ function buildTopicDetailUrl(grantId) {
 
 async function fetchGrantDetail(grantId) {
   try {
-    const response = await fetch(`/api/grants/${encodeURIComponent(grantId)}`);
+    const journeyRequestId = ensureJourneyRequestId();
+    const response = await fetch(`/api/grants/${encodeURIComponent(grantId)}`, {
+      headers: {
+        "X-Request-ID": journeyRequestId,
+      },
+    });
     if (!response.ok) {
       throw new Error("Could not load topic detail.");
     }
@@ -1098,6 +1114,7 @@ function buildFallbackGrantDetail(grantId) {
     source_language: result?.source_language || null,
     translated_from_source: Boolean(result?.translated_from_source),
     translation_note: result?.translation_note || null,
+    detail_note: result?.detail_note || null,
     eligibility_criteria: [],
     submission_deadlines:
       result?.deadline ? [{ label: "Main deadline", value: result.deadline }] : [],

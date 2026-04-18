@@ -3,109 +3,86 @@ from __future__ import annotations
 import os
 
 import pytest
+from fastapi.testclient import TestClient
 
-from backend.application_brief import ApplicationBriefService
+from backend.app import create_app
 from backend.config import load_settings
-from backend.embeddings import EmbeddingService
-from backend.matcher import OpenAIScorer
-from backend.models import GrantDetailResponse, GrantRecord, MatchCandidate
-from backend.openai_client import build_openai_client
-from backend.profile_resolver import OpenAICompanyProfileExpander
 
+
+SETTINGS = load_settings()
 
 pytestmark = pytest.mark.skipif(
-    not os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_LIVE_SMOKE") != "1",
-    reason="requires OPENAI_API_KEY and OPENAI_LIVE_SMOKE=1",
+    not SETTINGS.openai_api_key or os.getenv("OPENAI_LIVE_SMOKE") != "1",
+    reason="requires OPENAI_API_KEY via app settings and OPENAI_LIVE_SMOKE=1",
 )
 
 
-def test_openai_runtime_smoke() -> None:
-    settings = load_settings()
-    client = build_openai_client(settings)
+def test_openai_http_runtime_smoke() -> None:
+    client = TestClient(create_app())
+    request_id = "live-smoke-anthropic"
 
-    assert client is not None
+    profile_response = client.post(
+        "/api/profile/resolve",
+        json={"query": "Anthropic"},
+        headers={"X-Request-ID": request_id},
+    )
+    assert profile_response.status_code == 200
+    profile_payload = profile_response.json()
+    assert profile_payload["resolved"] is True
+    assert profile_payload["source"] in {"llm_expansion", "demo_profile"}
+    assert len(profile_payload["profile"]) > 40
 
-    expander = OpenAICompanyProfileExpander(
-        api_key=settings.openai_api_key or "",
-        model=settings.openai_profile_expansion_model,
-        client=client,
-        reasoning_effort=settings.openai_profile_reasoning_effort,
+    website_response = client.post(
+        "/api/profile/from-website",
+        json={"url": "anthropic.com"},
+        headers={"X-Request-ID": request_id},
     )
-    expanded = expander.expand("OpenAI")
-    assert expanded is not None
-    display_name, profile = expanded
-    assert display_name
-    assert len(profile) > 40
+    assert website_response.status_code == 200
+    website_payload = website_response.json()
+    assert website_payload["resolved"] is True
+    assert website_payload["source"] == "website_profile"
+    assert website_payload["normalized_url"] == "https://anthropic.com"
+    assert len(website_payload["profile"]) > 40
 
-    embedding_service = EmbeddingService(
-        model=settings.openai_embedding_model,
-        client=client,
-    )
-    embeddings = embedding_service.embed_texts(
-        [
-            "We build AI safety tooling for enterprise deployment across Europe.",
-            "Battery manufacturing platforms for grid-scale storage.",
-        ]
-    )
-    assert len(embeddings) == 2
-    assert len(embeddings[0]) > 10
-
-    grant = GrantRecord(
-        id="TOPIC-SMOKE-1",
-        title="Trustworthy AI deployment for European industry",
-        status="Open",
-        portal_url="https://example.com/TOPIC-SMOKE-1",
-        deadline="2026-08-01",
-        keywords=["ai", "safety", "deployment"],
-        framework_programme="Horizon Europe",
-        programme_division="Cluster 4",
-        description="Funding for safe and trustworthy AI deployment in European industry.",
-        search_text="trustworthy ai deployment european industry safety",
-    )
-    scorer = OpenAIScorer(
-        model=settings.openai_match_model,
-        client=client,
-        reasoning_effort=settings.openai_match_reasoning_effort,
-    )
-    scored = scorer.score(
-        "We build AI safety tooling for enterprise deployment across Europe.",
-        [MatchCandidate(grant=grant, shortlist_score=0.9)],
-    )
-    assert scored
-    assert scored[0].grant_id == "TOPIC-SMOKE-1"
-
-    brief_service = ApplicationBriefService(
-        client=client,
-        model=settings.openai_match_model,
-        reasoning_effort=settings.openai_match_reasoning_effort,
-    )
-    brief = brief_service.generate(
-        company_description="We build AI safety tooling for enterprise deployment across Europe.",
-        match_result={
-            "grant_id": "TOPIC-SMOKE-1",
-            "title": grant.title,
-            "status": grant.status,
-            "deadline": grant.deadline,
-            "days_left": None,
-            "budget": "EUR 4M",
-            "portal_url": grant.portal_url,
-            "fit_score": 85,
-            "why_match": "Strong overlap in trustworthy AI deployment.",
-            "application_angle": "Lead with safe enterprise deployment and European impact.",
-            "framework_programme": grant.framework_programme,
-            "programme_division": grant.programme_division,
-            "keywords": grant.keywords,
+    match_response = client.post(
+        "/api/match",
+        json={
+            "company_description": (
+                "Anthropic is a European-facing AI research and product company building frontier "
+                "language models, AI safety systems, developer APIs, and enterprise AI tooling "
+                "for regulated industries."
+            )
         },
-        grant_detail=GrantDetailResponse(
-            grant_id="TOPIC-SMOKE-1",
-            full_description="Long-form topic detail for trustworthy AI deployment in Europe.",
-            eligibility_criteria=["EU legal entity", "Industrial deployment focus"],
-            submission_deadlines=[{"label": "Main deadline", "value": "2026-08-01"}],
-            expected_outcomes=["Trusted deployment outcomes"],
-            documents=[],
-            partner_search_available=True,
-            source="smoke",
-            fallback_used=False,
-        ).model_dump(),
+        headers={"X-Request-ID": request_id},
     )
-    assert "application brief" in brief.markdown.lower()
+    assert match_response.status_code == 200
+    match_payload = match_response.json()
+    assert match_payload["result_source"] == "live_retrieval"
+    assert match_payload["results"]
+
+    top_result = match_payload["results"][0]
+    detail_response = client.get(
+        f"/api/grants/{top_result['grant_id']}",
+        headers={"X-Request-ID": request_id},
+    )
+    assert detail_response.status_code == 200
+    detail_payload = detail_response.json()
+    assert detail_payload["grant_id"] == top_result["grant_id"]
+    assert detail_payload["full_description"] or detail_payload["detail_note"]
+
+    brief_response = client.post(
+        "/api/application-brief",
+        json={
+            "company_description": (
+                "Anthropic is a European-facing AI research and product company building frontier "
+                "language models, AI safety systems, developer APIs, and enterprise AI tooling "
+                "for regulated industries."
+            ),
+            "match_result": top_result,
+            "grant_detail": detail_payload,
+        },
+        headers={"X-Request-ID": request_id},
+    )
+    assert brief_response.status_code == 200
+    brief_payload = brief_response.json()
+    assert "application brief" in brief_payload["markdown"].lower()

@@ -72,15 +72,27 @@ def _resolve_match_timeout(app) -> int:
     return 60
 
 
+def _get_match_coordinator(app):
+    return getattr(getattr(app, "state", None), "match_coordinator", None)
+
+
+def _normalize_status_for_legacy_path(status: IndexStatus) -> IndexStatus:
+    if status.match_path != "unavailable":
+        return status
+    if status.phase in {"ready", "ready_degraded"} and status.matching_available:
+        return status.model_copy(update={"match_path": "snapshot_only"})
+    return status
+
+
 def _wait_for_match_readiness(
-    app_state,
+    match_coordinator,
     *,
     timeout_seconds: float,
     poll_interval_seconds: float,
 ) -> tuple[IndexStatus, bool, bool]:
     started_at = time.perf_counter()
     while True:
-        status = app_state.get_status()
+        status = _normalize_status_for_legacy_path(match_coordinator.get_status())
         if is_match_ready(status):
             return status, True, False
 
@@ -107,7 +119,12 @@ def run_match_query(
         request_id = resolve_request_id(request_id)
         app = create_app()
         app.state.app_state.ensure_indexing_started()
-        status = app.state.app_state.get_status()
+        match_coordinator = _get_match_coordinator(app)
+        status = (
+            match_coordinator.get_status()
+            if match_coordinator is not None
+            else _normalize_status_for_legacy_path(app.state.app_state.get_status())
+        )
 
         if wait_timeout_seconds is None:
             wait_timeout_seconds = _resolve_match_timeout(app)
@@ -119,7 +136,7 @@ def run_match_query(
                 return CLI_EXIT_VALIDATION, payload
 
             status, ready, timed_out = _wait_for_match_readiness(
-                app.state.app_state,
+                match_coordinator or app.state.app_state,
                 timeout_seconds=wait_timeout_seconds,
                 poll_interval_seconds=poll_interval_seconds,
             )
@@ -135,29 +152,47 @@ def run_match_query(
                     request_id=request_id,
                 )
 
-            status = app.state.app_state.get_status()
+            status = (
+                match_coordinator.get_status()
+                if match_coordinator is not None
+                else _normalize_status_for_legacy_path(app.state.app_state.get_status())
+            )
 
-        grants = app.state.app_state.get_grants()
-        result = app.state.match_service.match(
-            company_description,
-            grants,
-            now=datetime.now(timezone.utc),
-            limit=app.state.settings.shortlist_limit,
-        )
-
-        if isinstance(result, dict):
-            indexed_grants = result.get("indexed_grants", 0)
-            results = result.get("results", [])
-        else:
+        if match_coordinator is not None:
+            execution = match_coordinator.execute_match(
+                company_description,
+                request_id=request_id,
+                now=datetime.now(timezone.utc),
+            )
+            if isinstance(execution, dict):
+                result = execution["match_response"]
+                execution_status = execution["status"]
+            else:
+                result = execution.match_response
+                execution_status = execution.status
             indexed_grants = result.indexed_grants
             results = result.model_dump()["results"]
+            result_source = result.result_source
+            payload_status = execution_status.model_dump()
+        else:
+            grants = app.state.app_state.get_grants()
+            result = app.state.match_service.match(
+                company_description,
+                grants,
+                limit=app.state.settings.shortlist_limit,
+            )
+            indexed_grants = result.indexed_grants
+            results = result.model_dump()["results"]
+            result_source = result.result_source
+            payload_status = status.model_dump()
 
         return CLI_EXIT_SUCCESS, {
             "ok": True,
             "request_id": request_id,
             "indexed_grants": indexed_grants,
+            "result_source": result_source,
             "results": results,
-            "status": status.model_dump(),
+            "status": payload_status,
         }
     except Exception as exc:
         return CLI_EXIT_RUNTIME, _build_match_error_payload(
@@ -170,7 +205,12 @@ def run_match_query(
 def run_index_query() -> dict:
     app = create_app()
     app.state.app_state.ensure_indexing_started()
-    status = app.state.app_state.get_status()
+    match_coordinator = _get_match_coordinator(app)
+    status = (
+        match_coordinator.get_status()
+        if match_coordinator is not None
+        else _normalize_status_for_legacy_path(app.state.app_state.get_status())
+    )
 
     return status.model_dump()
 
@@ -178,7 +218,13 @@ def run_index_query() -> dict:
 def run_status_query() -> dict:
     app = create_app()
     app.state.app_state.ensure_indexing_started()
-    return app.state.app_state.get_status().model_dump()
+    match_coordinator = _get_match_coordinator(app)
+    status = (
+        match_coordinator.get_status()
+        if match_coordinator is not None
+        else _normalize_status_for_legacy_path(app.state.app_state.get_status())
+    )
+    return status.model_dump()
 
 
 def run_health_query() -> dict:

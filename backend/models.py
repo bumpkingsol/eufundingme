@@ -153,6 +153,7 @@ class IndexStatus(BaseModel):
     live_retrieval_available: bool = False
     embeddings_available: bool = False
     ai_scoring_available: bool = False
+    match_path: str = "unavailable"
     summary: "IndexSummary | None" = None
 
 
@@ -175,6 +176,7 @@ class ReadinessResponse(BaseModel):
     live_retrieval_available: bool = False
     embeddings_available: bool = False
     ai_scoring_available: bool = False
+    match_path: str = "unavailable"
 
 
 class ParsedLLMMatch(BaseModel):
@@ -213,6 +215,7 @@ class GrantDetailResponse(BaseModel):
     source_language: str | None = None
     translated_from_source: bool = False
     translation_note: str | None = None
+    detail_note: str | None = None
     eligibility_criteria: list[str] = Field(default_factory=list)
     submission_deadlines: list[dict[str, str]] = Field(default_factory=list)
     expected_outcomes: list[str] = Field(default_factory=list)
