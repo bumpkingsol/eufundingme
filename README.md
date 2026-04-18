@@ -2,9 +2,9 @@
 
 Find EU funding for your company in 30 seconds.
 
-<video src="https://github.com/bumpkingsol/eufundingme/releases/download/media-v1/promo.mp4" poster="docs/videos/promo-poster.png" controls muted playsinline width="720"></video>
+[![45-second demo](docs/videos/promo.gif)](https://github.com/bumpkingsol/eufundingme/releases/download/media-v1/promo.mp4)
 
-[▶ Watch the 45-second demo](https://github.com/bumpkingsol/eufundingme/releases/download/media-v1/promo.mp4)
+_Click the preview above for the full 1920×1080 MP4 with sound._
 
 This open-source app works in three steps:
 
