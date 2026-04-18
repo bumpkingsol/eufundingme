@@ -483,6 +483,14 @@ function renderComparisonPanel() {
       const eligibility = detail?.eligibility_criteria?.join(", ") || grant.why_match;
       return `
         <div class="comparison-card">
+          <button
+            class="comparison-remove-button"
+            type="button"
+            aria-label="Remove ${escapeHtml(grant.title)} from favorites"
+            onclick="toggleComparisonGrant('${escapeHtml(grant.grant_id)}')"
+          >
+            Remove
+          </button>
           <h3>${escapeHtml(grant.title)}</h3>
           <p><strong>Budget</strong> ${escapeHtml(grant.budget || "—")}</p>
           <p><strong>Deadline</strong> ${escapeHtml(grant.deadline || "—")}</p>

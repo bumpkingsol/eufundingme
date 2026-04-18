@@ -1580,6 +1580,40 @@ if (comparisonEmpty.hidden !== true) {
     assert result.returncode == 0, result.stderr
 
 
+def test_frontend_renders_corner_remove_toggle_for_favorites():
+    script = build_frontend_harness(
+        """
+const results = [
+  { grant_id: "TOPIC-1", title: "Grant 1", status: "Open", portal_url: "https://example.com/1", fit_score: 91, why_match: "Fit 1", application_angle: "Angle 1", keywords: [], budget: "EUR 5M", deadline: "2026-08-01", days_left: 20, framework_programme: "Horizon", programme_division: "Cluster 4" },
+  { grant_id: "TOPIC-2", title: "Grant 2", status: "Open", portal_url: "https://example.com/2", fit_score: 81, why_match: "Fit 2", application_angle: "Angle 2", keywords: [], budget: "EUR 4M", deadline: "2026-08-02", days_left: 21, framework_programme: "LIFE", programme_division: "Climate" },
+];
+appContext.renderResults(results, 42);
+appContext.toggleComparisonGrant("TOPIC-1");
+appContext.toggleComparisonGrant("TOPIC-2");
+
+if (!comparisonTable.innerHTML.includes("comparison-remove-button")) {
+  throw new Error(`Expected remove button in favorites card: ${comparisonTable.innerHTML}`);
+}
+if (!comparisonTable.innerHTML.includes("Remove Grant 1 from favorites")) {
+  throw new Error(`Expected accessible remove label in favorites card: ${comparisonTable.innerHTML}`);
+}
+
+appContext.toggleComparisonGrant("TOPIC-1");
+
+if (comparisonTable.innerHTML.includes("Grant 1")) {
+  throw new Error(`Expected Grant 1 to be removed from favorites: ${comparisonTable.innerHTML}`);
+}
+if (!comparisonTable.innerHTML.includes("Grant 2")) {
+  throw new Error(`Expected Grant 2 to remain in favorites: ${comparisonTable.innerHTML}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_frontend_validates_alert_signup_without_backend():
     script = build_frontend_harness(
         """
