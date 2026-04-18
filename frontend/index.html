@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>EU Grant Matcher</title>
+    <meta
+      name="description"
+      content="Find EU funding for your company in 30 seconds."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <div class="ambient ambient-left"></div>
+      <div class="ambient ambient-right"></div>
+
+      <main class="layout">
+        <section class="hero">
+          <p class="eyebrow">Open Source Project</p>
+          <h1>Find EU funding for your company in 30 seconds.</h1>
+          <p class="lede">
+            Paste a company description. We index live EU grants, shortlist the
+            best candidates, and explain why each one fits.
+          </p>
+          <div class="hero-points">
+            <span>Live EC data</span>
+            <span>AI-ranked matches</span>
+            <span>Application angle included</span>
+          </div>
+        </section>
+
+        <section class="workspace">
+          <div class="panel panel-input">
+            <div class="panel-head">
+              <h2>Company Profile</h2>
+              <p>Describe the company, product, market, and strategic focus.</p>
+            </div>
+
+            <form id="match-form" class="match-form">
+              <label class="sr-only" for="company-description">Company description</label>
+              <textarea
+                id="company-description"
+                name="company-description"
+                rows="12"
+                placeholder="We build advanced AI safety systems for enterprise deployment across Europe..."
+                required
+              ></textarea>
+
+              <div class="form-row">
+                <button id="match-button" type="submit">Find Grants</button>
+                <p id="submit-hint" class="submit-hint">
+                  The first run builds a live grant index, then matching becomes instant.
+                </p>
+              </div>
+            </form>
+          </div>
+
+          <div class="panel panel-status">
+            <div class="panel-head">
+              <h2>Live Index Status</h2>
+              <p id="status-copy">Checking the grant index…</p>
+            </div>
+
+            <div class="status-meter" aria-hidden="true">
+              <div id="status-bar" class="status-bar"></div>
+            </div>
+
+            <dl class="status-stats">
+              <div>
+                <dt>Phase</dt>
+                <dd id="status-phase">idle</dd>
+              </div>
+              <div>
+                <dt>Grants</dt>
+                <dd id="status-count">0</dd>
+              </div>
+              <div>
+                <dt>Prefixes</dt>
+                <dd id="status-prefixes">0 / 0</dd>
+              </div>
+              <div>
+                <dt>Embeddings</dt>
+                <dd id="status-embeddings">warming up</dd>
+              </div>
+            </dl>
+          </div>
+        </section>
+
+        <section class="results-shell">
+          <div class="results-head">
+            <div>
+              <p class="eyebrow">Ranked Results</p>
+              <h2>Best-fitting live programmes</h2>
+            </div>
+            <p id="results-meta" class="results-meta">No search run yet.</p>
+          </div>
+
+          <div id="results-empty" class="results-empty">
+            The top matches will appear here with fit scores, rationale, and the angle to take in the application.
+          </div>
+
+          <div id="results-list" class="results-list"></div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>
