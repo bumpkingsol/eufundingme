@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from backend.config import load_settings
 from backend.ec_client import ECSearchClient
+from backend.embeddings import EmbeddingService, build_grant_embeddings
 from backend.indexer import CALL_PREFIXES, filter_indexable_grants
 from backend.normalize import normalize_grant
 from backend.snapshot_store import IndexSnapshotStore
@@ -73,7 +74,89 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Optional output path. Defaults to INDEX_SEED_SNAPSHOT_PATH.",
     )
+    parser.add_argument(
+        "--with-embeddings",
+        action="store_true",
+        help="Build and persist embeddings for the saved seed snapshot.",
+    )
     return parser.parse_args()
+
+
+def build_snapshot_artifacts(
+    grants,
+    *,
+    with_embeddings: bool,
+    settings,
+) -> tuple[dict[str, list[float]], bool]:
+    if not with_embeddings:
+        return {}, False
+    if not settings.openai_api_key:
+        raise RuntimeError("--with-embeddings requires OPENAI_API_KEY")
+
+    embeddings = build_grant_embeddings(
+        grants,
+        embedding_service=EmbeddingService(
+            model=settings.openai_embedding_model,
+            api_key=settings.openai_api_key,
+        ),
+    )
+    expected_ids = {grant.id for grant in grants}
+    if set(embeddings) != expected_ids:
+        raise RuntimeError("embedding build did not cover the full saved snapshot corpus")
+    return embeddings, True
+
+
+def build_degradation_reasons(
+    *,
+    failed_prefixes: int,
+    crawl_truncated: bool,
+    embeddings_ready: bool,
+) -> list[str]:
+    reasons: list[str] = []
+    if crawl_truncated:
+        reasons.append("crawl_truncated")
+    if failed_prefixes > 0:
+        reasons.append("prefix_fetch_failed")
+    if not embeddings_ready:
+        reasons.append("lexical_only_mode")
+    return reasons
+
+
+def build_status_payload(
+    *,
+    indexed_grants: int,
+    active_grants: int,
+    failed_prefixes: int,
+    truncated_prefixes: int,
+    embeddings_ready: bool,
+    coverage_complete: bool,
+) -> dict[str, object]:
+    return {
+        "phase": "ready_degraded",
+        "message": (
+            f"Seed snapshot generated with {indexed_grants} records "
+            f"including {active_grants} active grants"
+        ),
+        "indexed_grants": indexed_grants,
+        "scanned_prefixes": len(CALL_PREFIXES),
+        "total_prefixes": len(CALL_PREFIXES),
+        "failed_prefixes": failed_prefixes,
+        "truncated_prefixes": truncated_prefixes,
+        "embeddings_ready": embeddings_ready,
+        "degraded": True,
+        "coverage_complete": coverage_complete,
+        "matching_available": True,
+        "degradation_reasons": build_degradation_reasons(
+            failed_prefixes=failed_prefixes,
+            crawl_truncated=truncated_prefixes > 0,
+            embeddings_ready=embeddings_ready,
+        ),
+        "snapshot_loaded": False,
+        "snapshot_source": None,
+        "snapshot_age_seconds": None,
+        "refresh_in_progress": False,
+        "refresh_indexed_grants": 0,
+    }
 
 
 def main() -> int:
@@ -137,31 +220,26 @@ def main() -> int:
             snapshot_grants = [*filtered]
             remaining = max(0, args.target_grants - len(snapshot_grants))
             snapshot_grants.extend(inactive[:remaining])
-            status_payload = {
-                "phase": "ready_degraded",
-                "message": (
-                    f"Seed snapshot generated with {len(snapshot_grants)} records "
-                    f"including {len(filtered)} active grants"
-                ),
-                "indexed_grants": len(snapshot_grants),
-                "scanned_prefixes": len(CALL_PREFIXES),
-                "total_prefixes": len(CALL_PREFIXES),
-                "failed_prefixes": failed_prefixes,
-                "truncated_prefixes": len(next_round_queries),
-                "embeddings_ready": False,
-                "degraded": True,
-                "coverage_complete": False,
-                "matching_available": True,
-                "degradation_reasons": ["crawl_truncated", "lexical_only_mode"],
-                "snapshot_loaded": False,
-                "snapshot_source": None,
-                "snapshot_age_seconds": None,
-                "refresh_in_progress": False,
-                "refresh_indexed_grants": 0,
-            }
+            try:
+                embeddings, embeddings_ready = build_snapshot_artifacts(
+                    snapshot_grants,
+                    with_embeddings=args.with_embeddings,
+                    settings=settings,
+                )
+            except Exception as exc:
+                print(f"embedding_build_failed: failed to build snapshot embeddings: {exc}", flush=True)
+                return 1
+            status_payload = build_status_payload(
+                indexed_grants=len(snapshot_grants),
+                active_grants=len(filtered),
+                failed_prefixes=failed_prefixes,
+                truncated_prefixes=len(next_round_queries),
+                embeddings_ready=embeddings_ready,
+                coverage_complete=False,
+            )
             snapshot_store.save(
                 grants=snapshot_grants,
-                embeddings={},
+                embeddings=embeddings,
                 status_payload=status_payload,
                 written_at=datetime.now(timezone.utc),
             )
@@ -177,28 +255,26 @@ def main() -> int:
 
     filtered = filter_indexable_grants(collected, now=now)
     deduped = dedupe_grants(collected)
-    status_payload = {
-        "phase": "ready_degraded",
-        "message": f"Seed snapshot generated with {len(deduped)} records including {len(filtered)} active grants",
-        "indexed_grants": len(deduped),
-        "scanned_prefixes": len(CALL_PREFIXES),
-        "total_prefixes": len(CALL_PREFIXES),
-        "failed_prefixes": failed_prefixes,
-        "truncated_prefixes": 0,
-        "embeddings_ready": False,
-        "degraded": True,
-        "coverage_complete": True,
-        "matching_available": True,
-        "degradation_reasons": ["lexical_only_mode"] if failed_prefixes == 0 else ["lexical_only_mode", "prefix_fetch_failed"],
-        "snapshot_loaded": False,
-        "snapshot_source": None,
-        "snapshot_age_seconds": None,
-        "refresh_in_progress": False,
-        "refresh_indexed_grants": 0,
-    }
+    try:
+        embeddings, embeddings_ready = build_snapshot_artifacts(
+            deduped,
+            with_embeddings=args.with_embeddings,
+            settings=settings,
+        )
+    except Exception as exc:
+        print(f"embedding_build_failed: failed to build snapshot embeddings: {exc}", flush=True)
+        return 1
+    status_payload = build_status_payload(
+        indexed_grants=len(deduped),
+        active_grants=len(filtered),
+        failed_prefixes=failed_prefixes,
+        truncated_prefixes=0,
+        embeddings_ready=embeddings_ready,
+        coverage_complete=True,
+    )
     snapshot_store.save(
         grants=deduped,
-        embeddings={},
+        embeddings=embeddings,
         status_payload=status_payload,
         written_at=datetime.now(timezone.utc),
     )
