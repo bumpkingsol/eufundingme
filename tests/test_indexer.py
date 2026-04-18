@@ -88,3 +88,37 @@ def test_build_grant_index_merges_prefix_results_and_dedupes():
 
     assert [grant.id for grant in grants] == ["TOPIC-1", "TOPIC-2"]
     assert client.calls == [("AI-2026", 1), ("BATTERY-2026", 1)]
+
+
+def test_filter_indexable_grants_prefers_higher_quality_duplicate_record():
+    now = datetime(2026, 4, 18, tzinfo=timezone.utc)
+    low_quality = GrantRecord(
+        id="TOPIC-1",
+        title="AI Grant",
+        status="Open",
+        portal_url="https://example.com/TOPIC-1",
+        deadline="2026-08-01",
+        deadline_at=datetime.fromisoformat("2026-08-01T17:00:00+00:00"),
+        framework_programme="43108390",
+        programme_division="43108541",
+        keywords=["TOPIC-1"],
+        search_text="ai grant",
+    )
+    high_quality = GrantRecord(
+        id="TOPIC-1",
+        title="AI Grant",
+        status="Open",
+        portal_url="https://example.com/topic-details/TOPIC-1",
+        deadline="2026-08-01",
+        deadline_at=datetime.fromisoformat("2026-08-01T17:00:00+00:00"),
+        framework_programme="Horizon Europe",
+        programme_division="Cluster 4",
+        keywords=["Artificial intelligence"],
+        search_text="ai grant artificial intelligence",
+    )
+
+    kept = filter_indexable_grants([low_quality, high_quality], now=now)
+
+    assert len(kept) == 1
+    assert kept[0].framework_programme == "Horizon Europe"
+    assert kept[0].keywords == ["Artificial intelligence"]
