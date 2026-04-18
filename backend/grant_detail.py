@@ -54,6 +54,7 @@ def build_fallback_grant_detail(match_result: dict[str, object]) -> GrantDetailR
         source_language=match_result.get("source_language") if isinstance(match_result.get("source_language"), str) else None,
         translated_from_source=bool(match_result.get("translated_from_source")),
         translation_note=match_result.get("translation_note") if isinstance(match_result.get("translation_note"), str) else None,
+        detail_note=match_result.get("detail_note") if isinstance(match_result.get("detail_note"), str) else None,
         eligibility_criteria=[],
         submission_deadlines=(
             [{"label": "Main deadline", "value": deadline}]
@@ -68,11 +69,17 @@ def build_fallback_grant_detail(match_result: dict[str, object]) -> GrantDetailR
     )
 
 
-def build_grant_record_fallback(grant: GrantRecord) -> GrantDetailResponse:
+def build_grant_record_fallback(
+    grant: GrantRecord,
+    *,
+    source: str = "indexed_grant_fallback",
+    detail_note: str | None = None,
+) -> GrantDetailResponse:
     return GrantDetailResponse(
         grant_id=grant.id,
         full_description=grant.description or "",
         source_language=grant.source_language,
+        detail_note=detail_note,
         eligibility_criteria=[],
         submission_deadlines=(
             [{"label": "Main deadline", "value": grant.deadline}]
@@ -82,7 +89,7 @@ def build_grant_record_fallback(grant: GrantRecord) -> GrantDetailResponse:
         expected_outcomes=[],
         documents=[],
         partner_search_available=None,
-        source="indexed_grant_fallback",
+        source=source,
         fallback_used=True,
     )
 

@@ -1,7 +1,7 @@
 import json
 
 from tests.cli._helpers import run_cli
-from backend.models import MatchResponse
+from backend.models import IndexStatus, MatchResponse
 from backend.cli_services import run_match_query
 
 
@@ -135,6 +135,7 @@ def test_match_query_uses_snapshot_backed_ready_state_without_waiting():
     assert code == 0
     assert payload["ok"] is True
     assert payload["status"]["snapshot_loaded"] is True
+    assert payload["status"]["match_path"] == "snapshot_only"
 
 
 def test_match_query_times_out_when_not_ready():
@@ -175,6 +176,70 @@ def test_match_query_times_out_when_not_ready():
     assert payload["ok"] is False
     assert payload["error"]["code"] == "MATCH_TIMEOUT"
     assert "request_id" in payload
+
+
+def test_match_query_returns_live_result_source_and_match_path_from_shared_coordinator():
+    class FakeCoordinator:
+        def get_status(self):
+            return IndexStatus(
+                phase="idle",
+                message="Live retrieval ready",
+                indexed_grants=0,
+                matching_available=False,
+                degraded=False,
+                coverage_complete=False,
+                degradation_reasons=[],
+                live_retrieval_available=True,
+                match_path="live_first",
+            )
+
+        def execute_match(self, company_description, *, request_id, now):
+            assert company_description == "We build AI safety tools across Europe."
+            assert request_id == "agent-run-123"
+            return {
+                "match_response": MatchResponse(indexed_grants=1, result_source="live_retrieval", results=[]),
+                "status": IndexStatus(
+                    phase="idle",
+                    message="Live retrieval ready",
+                    indexed_grants=0,
+                    matching_available=False,
+                    degraded=False,
+                    coverage_complete=False,
+                    degradation_reasons=[],
+                    live_retrieval_available=True,
+                    match_path="live_first",
+                ),
+            }
+
+    class FakeAppState:
+        def ensure_indexing_started(self) -> None:
+            return None
+
+    class FakeAppRuntime:
+        def __init__(self) -> None:
+            self.app_state = FakeAppState()
+            self.match_coordinator = FakeCoordinator()
+            self.settings = type("Settings", (), {"shortlist_limit": 10, "cli_match_timeout_seconds": 60})()
+
+    fake_app = type("App", (), {"state": FakeAppRuntime()})()
+
+    import backend.cli_services
+
+    original_create_app = backend.cli_services.create_app
+    backend.cli_services.create_app = lambda: fake_app
+    try:
+        code, payload = run_match_query(
+            "We build AI safety tools across Europe.",
+            request_id="agent-run-123",
+            wait_timeout_seconds=0.0,
+        )
+    finally:
+        backend.cli_services.create_app = original_create_app
+
+    assert code == 0
+    assert payload["ok"] is True
+    assert payload["result_source"] == "live_retrieval"
+    assert payload["status"]["match_path"] == "live_first"
 
 
 def test_match_query_fails_when_matching_unavailable():

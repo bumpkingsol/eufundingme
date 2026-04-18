@@ -1195,7 +1195,7 @@ if (elements.get("dashboard-deadline").textContent !== "Closest deadline: 3 days
     assert result.returncode == 0, result.stderr
 
 
-def test_frontend_prefers_live_refresh_count_over_seed_snapshot_count():
+def test_frontend_distinguishes_cached_snapshot_from_live_refresh_count():
     script = build_frontend_harness(
         """
 const status = {
@@ -1225,11 +1225,14 @@ const status = {
 
 appContext.updateStatus(status);
 
-if (elements.get("status-count").textContent !== "44") {
-  throw new Error(`Unexpected live status count: ${elements.get("status-count").textContent}`);
+if (elements.get("status-count").textContent !== "2") {
+  throw new Error(`Unexpected cached status count: ${elements.get("status-count").textContent}`);
 }
-if (elements.get("dashboard-total-grants").textContent !== "44 grants found so far") {
+if (elements.get("dashboard-total-grants").textContent !== "2 cached records ready · 44 active grants found in live refresh") {
   throw new Error(`Unexpected dashboard grants copy: ${elements.get("dashboard-total-grants").textContent}`);
+}
+if (elements.get("status-refresh").textContent !== "refreshing in background · 44 active grants found in live refresh") {
+  throw new Error(`Unexpected refresh progress copy: ${elements.get("status-refresh").textContent}`);
 }
 """
     )
@@ -1270,12 +1273,12 @@ const status = {
 appContext.updateStatus(status);
 
 if (elements.get("status-count").textContent !== "44") {
-  throw new Error(`Unexpected visible indexed count: ${elements.get("status-count").textContent}`);
+  throw new Error(`Unexpected cached corpus count: ${elements.get("status-count").textContent}`);
 }
-if (elements.get("dashboard-total-grants").textContent !== "44 grants indexed · 10 found in live refresh") {
+if (elements.get("dashboard-total-grants").textContent !== "44 cached records ready · 10 active grants found in live refresh") {
   throw new Error(`Unexpected dashboard grants copy: ${elements.get("dashboard-total-grants").textContent}`);
 }
-if (elements.get("status-refresh").textContent !== "refreshing in background · 10 found so far") {
+if (elements.get("status-refresh").textContent !== "refreshing in background · 10 active grants found in live refresh") {
   throw new Error(`Unexpected refresh progress copy: ${elements.get("status-refresh").textContent}`);
 }
 """
@@ -1370,11 +1373,59 @@ appContext.updateStatus(status);
 if (!elements.get("status-copy").textContent.includes("Running with cached data")) {
   throw new Error(`Unexpected cached-data status copy: ${elements.get("status-copy").textContent}`);
 }
-if (!elements.get("submit-hint").textContent.includes("Bundled snapshot")) {
+if (!elements.get("submit-hint").textContent.includes("cached corpus")) {
   throw new Error(`Unexpected cached-data submit hint: ${elements.get("submit-hint").textContent}`);
 }
 if (elements.get("status-degraded").textContent.startsWith("Degraded")) {
   throw new Error(`Expected non-degraded banner copy: ${elements.get("status-degraded").textContent}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_clarifies_snapshot_vs_live_refresh_when_seed_is_large():
+    script = build_frontend_harness(
+        """
+const status = {
+  phase: "ready_degraded",
+  message: "Using bundled seed snapshot while live refresh runs",
+  indexed_grants: 1000,
+  refresh_indexed_grants: 56,
+  scanned_prefixes: 12,
+  total_prefixes: 46,
+  failed_prefixes: 0,
+  truncated_prefixes: 0,
+  embeddings_ready: false,
+  matching_available: true,
+  coverage_complete: false,
+  degraded: true,
+  degradation_reasons: ["bundled_seed_mode"],
+  snapshot_loaded: true,
+  snapshot_source: "bundled",
+  snapshot_age_seconds: 120,
+  refresh_in_progress: true,
+  summary: {
+    total_grants: 1000,
+    programme_count: 18,
+    total_budget_display: "EUR 1.1B",
+    closest_deadline_days: 3,
+  },
+};
+
+appContext.updateStatus(status);
+
+if (elements.get("status-count").textContent !== "1000") {
+  throw new Error(`Unexpected cached corpus count: ${elements.get("status-count").textContent}`);
+}
+if (elements.get("dashboard-total-grants").textContent !== "1000 cached records ready · 56 active grants found in live refresh") {
+  throw new Error(`Unexpected dashboard grants copy: ${elements.get("dashboard-total-grants").textContent}`);
+}
+if (elements.get("status-refresh").textContent !== "refreshing in background · 56 active grants found in live refresh") {
+  throw new Error(`Unexpected refresh progress copy: ${elements.get("status-refresh").textContent}`);
 }
 """
     )
@@ -1495,6 +1546,50 @@ if (!resultsList.innerHTML.includes("EU entity")) {
     assert result.returncode == 0, result.stderr
 
 
+def test_frontend_sends_journey_request_id_on_grant_detail_fetch():
+    script = build_frontend_harness(
+        """
+queueProfileResponse(
+  profileJsonResponse({
+    resolved: true,
+    profile: "OpenAI full profile from quick fill.",
+    display_name: "OpenAI",
+    source: "demo_profile",
+    message: null,
+  }),
+);
+
+queueDetailResponse("TOPIC-1", {
+  grant_id: "TOPIC-1",
+  full_description: "Detailed description",
+  eligibility_criteria: [],
+  submission_deadlines: [],
+  expected_outcomes: [],
+  documents: [],
+  source: "topic_detail_json",
+  fallback_used: false,
+});
+
+descriptionInput.value = "OpenAI";
+await form.dispatch("submit");
+await appContext.toggleGrantDetails("TOPIC-1");
+
+const matchCall = fetchCalls.find((call) => call.url === "/api/match");
+const detailCall = fetchCalls.find((call) => call.url === "/api/grants/TOPIC-1");
+if (!matchCall || !detailCall) {
+  throw new Error(`Expected both match and detail calls: ${JSON.stringify(fetchCalls)}`);
+}
+if (matchCall.options.headers["X-Request-ID"] !== detailCall.options.headers["X-Request-ID"]) {
+  throw new Error(`Expected shared journey request id: ${JSON.stringify(fetchCalls)}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_frontend_renders_translation_note_on_results_and_details():
     script = build_frontend_harness(
         """
@@ -1539,6 +1634,51 @@ if (!resultsList.innerHTML.includes("Translated from Bulgarian")) {
 }
 if (!resultsList.innerHTML.includes("This grant appears tied to Bulgaria")) {
   throw new Error(`Expected country note in result markup: ${resultsList.innerHTML}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_calls_out_fallback_detail_note_when_official_detail_is_missing():
+    script = build_frontend_harness(
+        """
+appContext.renderResults([
+  {
+    grant_id: "LIVE-1",
+    title: "Live AI Grant",
+    status: "Open",
+    deadline: "2027-03-18",
+    days_left: 333,
+    budget: "EUR 44M",
+    portal_url: "https://example.com/LIVE-1",
+    fit_score: 89,
+    why_match: "Strong fit",
+    application_angle: "Lead with deployment",
+    framework_programme: "Horizon Europe",
+    programme_division: "Cluster 4",
+    keywords: ["ai"],
+  }
+], 42);
+
+queueDetailResponse("LIVE-1", {
+  grant_id: "LIVE-1",
+  full_description: "Live search summary detail.",
+  eligibility_criteria: [],
+  submission_deadlines: [{ label: "Main deadline", value: "2027-03-18" }],
+  expected_outcomes: [],
+  documents: [],
+  source: "live_grant_cache_fallback",
+  fallback_used: true,
+  detail_note: "Using a search-summary fallback because official topic detail was unavailable.",
+});
+await appContext.toggleGrantDetails("LIVE-1");
+
+if (!resultsList.innerHTML.includes("search-summary fallback")) {
+  throw new Error(`Expected fallback detail note in results markup: ${resultsList.innerHTML}`);
 }
 """
     )

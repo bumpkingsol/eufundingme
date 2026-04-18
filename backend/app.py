@@ -14,8 +14,9 @@ from .config import Settings, load_settings
 from .ec_client import ECSearchClient
 from .embeddings import EmbeddingService, build_grant_embeddings, embedding_shortlist, lexical_shortlist
 from .grant_detail import GrantDetailService, build_grant_record_fallback
-from .indexer import filter_indexable_grants
+from .live_grant_cache import LiveGrantCache
 from .live_grants import LiveGrantService
+from .match_runtime import MatchCoordinator, is_match_ready
 from .matcher import MatchService, OpenAIScorer
 from .models import (
     ApplicationBriefRequest,
@@ -47,12 +48,6 @@ FAVICON_SVG = (
     "</svg>"
 )
 MATCH_NOT_READY_ERROR_CODE = "INDEX_NOT_READY"
-
-
-def is_match_ready(status: IndexStatus) -> bool:
-    if status.phase in {"ready", "ready_degraded"}:
-        return status.matching_available
-    return status.phase == "idle" and status.live_retrieval_available
 
 
 def build_match_unavailable_error(status: IndexStatus, request_id: str | None = None) -> dict:
@@ -161,6 +156,27 @@ def build_match_service(settings: Settings, app_state: AppState) -> MatchService
     )
 
 
+def build_match_coordinator(
+    *,
+    app_state,
+    match_service,
+    translation_service,
+    settings: Settings,
+    live_grant_service=None,
+    live_grant_cache: LiveGrantCache | None = None,
+    live_retrieval_capability: bool = True,
+) -> MatchCoordinator:
+    return MatchCoordinator(
+        app_state=app_state,
+        match_service=match_service,
+        translation_service=translation_service,
+        settings=settings,
+        live_grant_service=live_grant_service,
+        live_grant_cache=live_grant_cache or LiveGrantCache(),
+        live_retrieval_capability=live_retrieval_capability,
+    )
+
+
 def create_app(
     *,
     settings: Settings | None = None,
@@ -214,6 +230,7 @@ def create_app(
     else:
         app.state.live_grant_service = None
     app.state.live_retrieval_capability = True
+    app.state.live_grant_cache = LiveGrantCache()
     app.state.grant_detail_service = GrantDetailService(timeout_seconds=active_settings.ec_timeout_seconds)
     app.state.application_brief_service = ApplicationBriefService(
         client=build_openai_client(active_settings),
@@ -254,15 +271,23 @@ def create_app(
             fetch_html=fetch_website_html,
             generate_profile=website_profile_generator.generate,
         )
+    app.state.match_coordinator = build_match_coordinator(
+        app_state=app.state.app_state,
+        match_service=app.state.match_service,
+        translation_service=app.state.translation_service,
+        settings=active_settings,
+        live_grant_service=app.state.live_grant_service,
+        live_grant_cache=app.state.live_grant_cache,
+        live_retrieval_capability=getattr(app.state, "live_retrieval_capability", False),
+    )
 
-    def enrich_status(status: IndexStatus) -> IndexStatus:
-        return status.model_copy(
-            update={
-                "live_retrieval_available": getattr(app.state, "live_retrieval_capability", False),
-                "embeddings_available": bool(active_settings.openai_api_key),
-                "ai_scoring_available": bool(active_settings.openai_api_key),
-            }
-        )
+    def sync_match_coordinator() -> MatchCoordinator:
+        coordinator = app.state.match_coordinator
+        coordinator.match_service = app.state.match_service
+        coordinator.translation_service = app.state.translation_service
+        coordinator.live_grant_service = getattr(app.state, "live_grant_service", None)
+        coordinator.live_retrieval_capability = getattr(app.state, "live_retrieval_capability", False)
+        return coordinator
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
@@ -282,7 +307,7 @@ def create_app(
 
     @app.get("/api/health", response_model=HealthResponse)
     def health() -> HealthResponse:
-        status = app.state.app_state.get_status()
+        status = sync_match_coordinator().get_status()
         return HealthResponse(
             status="ok",
             readiness_phase=status.phase,
@@ -293,7 +318,7 @@ def create_app(
     @app.get("/api/ready", response_model=ReadinessResponse)
     def readiness() -> ReadinessResponse | JSONResponse:
         app.state.app_state.ensure_indexing_started()
-        status = enrich_status(app.state.app_state.get_status())
+        status = sync_match_coordinator().get_status()
         readiness = ReadinessResponse(
             status="ready" if is_match_ready(status) else "not_ready",
             phase=status.phase,
@@ -306,6 +331,7 @@ def create_app(
             live_retrieval_available=status.live_retrieval_available,
             embeddings_available=status.embeddings_available,
             ai_scoring_available=status.ai_scoring_available,
+            match_path=status.match_path,
         )
         if is_match_ready(status):
             return readiness
@@ -314,25 +340,41 @@ def create_app(
     @app.get("/api/index/status", response_model=IndexStatus)
     def index_status() -> IndexStatus:
         app.state.app_state.ensure_indexing_started()
-        status = enrich_status(app.state.app_state.get_status())
+        status = sync_match_coordinator().get_status()
         if hasattr(app.state.app_state, "get_index_summary"):
             return status.model_copy(update={"summary": app.state.app_state.get_index_summary()})
         return status
 
     @app.get("/api/grants/{topic_id}", response_model=GrantDetailResponse)
-    def grant_detail(topic_id: str) -> GrantDetailResponse:
+    def grant_detail(
+        topic_id: str,
+        x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
+    ) -> GrantDetailResponse:
+        request_id = x_request_id
+        reference_time = datetime.now(timezone.utc)
         grants = app.state.app_state.get_grants() if hasattr(app.state.app_state, "get_grants") else []
         indexed_grant = next((grant for grant in grants if getattr(grant, "id", None) == topic_id), None)
+        cached_live_grant = app.state.live_grant_cache.get_grant(request_id, topic_id, now=reference_time)
         try:
             detail = app.state.grant_detail_service.get(topic_id)
         except LookupError as exc:
-            if indexed_grant is None:
+            if cached_live_grant is not None:
+                detail = build_grant_record_fallback(
+                    cached_live_grant,
+                    source="live_grant_cache_fallback",
+                    detail_note="Using a search-summary fallback because official topic detail was unavailable.",
+                )
+            elif indexed_grant is not None:
+                detail = build_grant_record_fallback(indexed_grant)
+            else:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
-            detail = build_grant_record_fallback(indexed_grant)
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-        return app.state.translation_service.translate_grant_detail(detail, grant=indexed_grant)
+        return app.state.translation_service.translate_grant_detail(
+            detail,
+            grant=cached_live_grant or indexed_grant,
+        )
 
     @app.post("/api/profile/resolve", response_model=ProfileResolveResponse)
     def profile_resolve(
@@ -414,53 +456,23 @@ def create_app(
             request_id=request_id,
             model=active_settings.openai_match_model if active_settings.openai_api_key else None,
         )
-        status = enrich_status(app.state.app_state.get_status())
+        status = sync_match_coordinator().get_status()
         if not is_match_ready(status):
             raise HTTPException(
                 status_code=503,
                 detail=build_match_unavailable_error(status, request_id=request_id),
             )
-        live_grant_service = getattr(app.state, "live_grant_service", None)
-        if live_grant_service is not None:
-            live_result = live_grant_service.retrieve(
-                payload.company_description,
-                now=reference_time,
-            )
-        else:
-            live_result = None
-        all_grants = (live_result.grants if live_result is not None else []) or app.state.app_state.get_grants()
-        grants = filter_indexable_grants(all_grants, now=reference_time)
-        base_reasons = list(live_result.degradation_reasons) if live_result is not None else []
-        result_source = "live_retrieval" if live_result is not None and live_result.grants else "snapshot_fallback"
-        if result_source == "snapshot_fallback":
-            base_reasons.extend(status.degradation_reasons)
-        has_ai_matching_capability = (
-            status.embeddings_ready or status.embeddings_available or status.ai_scoring_available
-        )
-        if (
-            not active_settings.openai_api_key
-            and not has_ai_matching_capability
-            and "lexical_only_mode" not in base_reasons
-        ):
-            base_reasons.append("lexical_only_mode")
-        match_response = app.state.match_service.match(
+        execution = sync_match_coordinator().execute_match(
             payload.company_description,
-            grants,
+            request_id=request_id,
             now=reference_time,
-            limit=app.state.settings.shortlist_limit,
-            base_degradation_reasons=base_reasons,
         )
-        match_response = app.state.translation_service.translate_match_response(match_response, all_grants)
-        sentry_sdk.set_measurement(
-            "grant_embeddings_available",
-            1.0 if (status.embeddings_ready or status.embeddings_available) else 0.0,
-        )
-        return match_response.model_copy(
+        return execution.match_response.model_copy(
             update={
                 "request_id": request_id,
-                "indexed_grants": len(all_grants),
-                "refresh_indexed_grants": len(all_grants),
-                "result_source": result_source,
+                "indexed_grants": len(execution.all_grants),
+                "refresh_indexed_grants": len(execution.all_grants),
+                "result_source": execution.result_source,
             }
         )
 

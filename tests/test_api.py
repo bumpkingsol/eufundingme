@@ -184,6 +184,7 @@ def test_readiness_endpoint_reports_snapshot_backed_matching():
     assert response.json()["snapshot_loaded"] is True
     assert response.json()["snapshot_source"] == "runtime"
     assert response.json()["refresh_in_progress"] is True
+    assert response.json()["match_path"] == "live_first"
 
 
 def test_readiness_endpoint_reports_bundled_seed_matching():
@@ -218,6 +219,7 @@ def test_readiness_endpoint_reports_bundled_seed_matching():
     assert response.status_code == 200
     assert response.json()["snapshot_loaded"] is True
     assert response.json()["snapshot_source"] == "bundled"
+    assert response.json()["match_path"] == "live_first"
 
 
 def test_readiness_endpoint_reports_live_retrieval_capabilities():
@@ -248,6 +250,7 @@ def test_readiness_endpoint_reports_live_retrieval_capabilities():
     assert response.status_code == 200
     assert response.json()["status"] == "ready"
     assert response.json()["live_retrieval_available"] is True
+    assert response.json()["match_path"] == "live_first"
 
 
 def test_match_endpoint_returns_ranked_results():
@@ -529,6 +532,7 @@ def test_readiness_endpoint_distinguishes_usable_matching():
 
     assert response.status_code == 503
     assert response.json()["status"] == "not_ready"
+    assert response.json()["match_path"] == "unavailable"
 
 
 def test_match_endpoint_allows_ready_degraded_state():
@@ -1137,3 +1141,92 @@ def test_grant_detail_endpoint_falls_back_to_indexed_grant_when_upstream_missing
     assert payload["grant_id"] == "TOPIC-1"
     assert payload["full_description"] == "Indexed fallback description"
     assert payload["fallback_used"] is True
+
+
+def test_grant_detail_endpoint_uses_request_scoped_live_grant_fallback_when_upstream_missing():
+    class MissingDetailService:
+        def get(self, topic_id: str):
+            raise LookupError(f"no grant detail found for {topic_id}")
+
+    class EmptyState:
+        def ensure_indexing_started(self) -> None:
+            return None
+
+        def get_status(self):
+            return IndexStatus(
+                phase="idle",
+                message="Live retrieval only",
+                indexed_grants=0,
+                matching_available=False,
+                degraded=False,
+                coverage_complete=False,
+                degradation_reasons=[],
+            )
+
+        def get_grants(self):
+            return []
+
+    app = create_app(app_state=EmptyState())
+    app.state.grant_detail_service = MissingDetailService()
+    app.state.live_grant_cache.store(
+        "journey-123",
+        [
+            GrantRecord(
+                id="LIVE-1",
+                title="Live AI Grant",
+                status="Open",
+                portal_url="https://example.com/LIVE-1",
+                description="Live grant summary from search retrieval",
+                deadline="2027-03-18",
+                framework_programme="Horizon Europe",
+                programme_division="Cluster 4",
+                keywords=["ai", "safety"],
+                source_language="de",
+                search_text="live ai grant summary",
+            )
+        ],
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/grants/LIVE-1", headers={"X-Request-ID": "journey-123"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["grant_id"] == "LIVE-1"
+    assert payload["full_description"] == "Live grant summary from search retrieval"
+    assert payload["fallback_used"] is True
+    assert payload["source"] == "live_grant_cache_fallback"
+    assert "search-summary fallback" in payload["detail_note"]
+
+
+def test_grant_detail_endpoint_returns_404_when_live_cache_and_snapshot_are_missing():
+    class MissingDetailService:
+        def get(self, topic_id: str):
+            raise LookupError(f"no grant detail found for {topic_id}")
+
+    class EmptyState:
+        def ensure_indexing_started(self) -> None:
+            return None
+
+        def get_status(self):
+            return IndexStatus(
+                phase="idle",
+                message="Live retrieval only",
+                indexed_grants=0,
+                matching_available=False,
+                degraded=False,
+                coverage_complete=False,
+                degradation_reasons=[],
+            )
+
+        def get_grants(self):
+            return []
+
+    app = create_app(app_state=EmptyState())
+    app.state.grant_detail_service = MissingDetailService()
+    client = TestClient(app)
+
+    response = client.get("/api/grants/LIVE-404", headers={"X-Request-ID": "journey-404"})
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "no grant detail found for LIVE-404"
