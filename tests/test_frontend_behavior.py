@@ -454,6 +454,9 @@ const pendingUnlockStatus = elements.get("pending-unlock-status");
 const billingMessage = elements.get("billing-message");
 const billingEmailInput = elements.get("billing-email");
 const guestCheckoutButton = elements.get("guest-checkout-button");
+const subscriptionCheckoutButton = elements.get("subscription-checkout-button");
+const creditUnlockButton = elements.get("credit-unlock-button");
+const refreshAccessButton = elements.get("refresh-access-button");
 const dashboardEmailInput = elements.get("dashboard-email");
 const dashboardLoadButton = elements.get("dashboard-load-button");
 const dashboardMessage = elements.get("dashboard-message");
@@ -1606,6 +1609,213 @@ if (pendingUnlockStatus.hidden !== false) {
 }
 if (!pendingUnlockStatus.textContent.includes("could not refresh unlock status")) {
   throw new Error(`Unexpected pending unlock failure copy: ${pendingUnlockStatus.textContent}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_restores_unlocked_state_after_redirect_using_persisted_search_context():
+    script = build_frontend_harness(
+        """
+for (let i = 0; i < 20; i += 1) {
+  await Promise.resolve();
+}
+
+if (descriptionInput.value !== "We build AI tooling for industrial companies.") {
+  throw new Error(`Expected restored description for unlocked reload, got: ${descriptionInput.value}`);
+}
+
+const accessCalls = fetchCalls.filter((call) => call.url.startsWith("/api/search-artifacts/artifact-1/access"));
+if (accessCalls.length !== 1) {
+  throw new Error(`Expected one artifact access check on startup, got ${accessCalls.length}`);
+}
+const matchCalls = fetchCalls.filter((call) => call.url === "/api/match");
+if (matchCalls.length !== 1) {
+  throw new Error(`Expected one match reload on unlocked startup, got ${matchCalls.length}`);
+}
+const requestBody = JSON.parse(matchCalls[0].options.body);
+if (requestBody.company_description !== "We build AI tooling for industrial companies.") {
+  throw new Error(`Unexpected restored match request body: ${requestBody.company_description}`);
+}
+if (!resultsList.innerHTML.includes("Unlocked Grant")) {
+  throw new Error(`Expected unlocked results to render after restore: ${resultsList.innerHTML}`);
+}
+if (billingPanel.hidden !== true) {
+  throw new Error("Expected billing panel to hide after restored unlock succeeds");
+}
+if (localStorage.getItem("eufundingme.checkoutContext") !== null) {
+  throw new Error("Expected checkout context to clear after restored unlock succeeds");
+}
+""",
+        before_bootstrap="""
+artifactAccessResponse = {
+  ok: true,
+  json: async () => ({
+    artifact_id: "artifact-1",
+    has_access: true,
+    status: "unlocked",
+    access_state: "unlocked",
+    expires_at: "2026-04-27T00:00:00Z",
+  }),
+};
+matchResponse = {
+  ok: true,
+  json: async () => ({
+    indexed_grants: 42,
+    access_state: "unlocked",
+    artifact_id: "artifact-1",
+    results: [
+      {
+        grant_id: "TOPIC-9",
+        title: "Unlocked Grant",
+        status: "Open",
+        deadline: "2026-10-01",
+        days_left: 60,
+        budget: "EUR 8M",
+        portal_url: "https://example.com/TOPIC-9",
+        fit_score: 93,
+        why_match: "Full unlocked why match",
+        application_angle: "Full unlocked angle",
+        framework_programme: "Horizon Europe",
+        programme_division: "Cluster 4",
+        keywords: ["ai"],
+      }
+    ]
+  }),
+};
+localStorage.setItem(
+  "eufundingme.checkoutContext",
+  JSON.stringify({
+    artifact_id: "artifact-1",
+    access_state: "pending_unlock",
+    email: "founder@example.com",
+    company_description: "We build AI tooling for industrial companies.",
+    preview_result: {
+      grant_id: "TOPIC-1",
+      title: "Grant TOPIC-1",
+      status: "Open",
+      deadline: "2026-08-01",
+      days_left: 20,
+      budget: "EUR 5M",
+      portal_url: "https://example.com/TOPIC-1",
+      fit_score: 90,
+      why_match: "Visible why match",
+      application_angle: "Visible angle",
+      framework_programme: "Horizon Europe",
+      programme_division: "Cluster 4",
+      keywords: ["ai"],
+    },
+    locked_result_teasers: [],
+    locked_result_count: 1,
+    artifact_unlocked: false,
+    checkout_pending: true,
+  }),
+);
+""",
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_checkout_failure_clears_stale_pending_storage_state():
+    script = build_frontend_harness(
+        """
+guestCheckoutResponse = {
+  ok: false,
+  json: async () => ({
+    detail: {
+      message: "Checkout unavailable",
+    },
+  }),
+};
+
+billingEmailInput.value = "founder@example.com";
+descriptionInput.value = "We build AI tooling for industrial companies.";
+appContext.renderMatchExperience({
+  artifact_id: "artifact-1",
+  preview_result: {
+    grant_id: "TOPIC-1",
+    title: "Grant TOPIC-1",
+    status: "Open",
+    deadline: "2026-08-01",
+    days_left: 20,
+    budget: "EUR 5M",
+    portal_url: "https://example.com/TOPIC-1",
+    fit_score: 90,
+    why_match: "Visible why match",
+    application_angle: "Visible angle",
+    framework_programme: "Horizon Europe",
+    programme_division: "Cluster 4",
+    keywords: ["ai"],
+  },
+  locked_result_teasers: [],
+  locked_result_count: 1,
+  access_state: "preview",
+});
+
+await guestCheckoutButton.dispatch("click");
+
+const savedState = JSON.parse(localStorage.getItem("eufundingme.checkoutContext"));
+if (savedState.checkout_pending !== false) {
+  throw new Error(`Expected checkout_pending=false after checkout failure, got ${JSON.stringify(savedState)}`);
+}
+if (savedState.access_state !== "preview") {
+  throw new Error(`Expected preview access state to remain after checkout failure, got ${savedState.access_state}`);
+}
+if (!billingMessage.textContent.includes("Checkout unavailable")) {
+  throw new Error(`Expected checkout error message, got: ${billingMessage.textContent}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_pending_unlock_disables_duplicate_purchase_actions_but_keeps_refresh_available():
+    script = build_frontend_harness(
+        """
+appContext.renderMatchExperience({
+  artifact_id: "artifact-1",
+  preview_result: {
+    grant_id: "TOPIC-1",
+    title: "Grant TOPIC-1",
+    status: "Open",
+    deadline: "2026-08-01",
+    days_left: 20,
+    budget: "EUR 5M",
+    portal_url: "https://example.com/TOPIC-1",
+    fit_score: 90,
+    why_match: "Visible why match",
+    application_angle: "Visible angle",
+    framework_programme: "Horizon Europe",
+    programme_division: "Cluster 4",
+    keywords: ["ai"],
+  },
+  locked_result_teasers: [],
+  locked_result_count: 1,
+  access_state: "pending_unlock",
+  checkout_pending: true,
+});
+
+if (!guestCheckoutButton.disabled) {
+  throw new Error("Expected guest checkout button to be disabled while unlock is pending");
+}
+if (!subscriptionCheckoutButton.disabled) {
+  throw new Error("Expected subscription checkout button to be disabled while unlock is pending");
+}
+if (!creditUnlockButton.disabled) {
+  throw new Error("Expected credit unlock button to be disabled while unlock is pending");
+}
+if (refreshAccessButton.disabled) {
+  throw new Error("Expected refresh action to remain available while unlock is pending");
 }
 """
     )

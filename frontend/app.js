@@ -342,6 +342,7 @@ function buildCheckoutContextSnapshot(overrides = {}) {
     artifact_id: overrides.artifact_id ?? baseMeta.artifact_id ?? null,
     access_state: overrides.access_state ?? baseMeta.access_state ?? "preview",
     email: overrides.email ?? getBillingEmailValue() ?? "",
+    company_description: overrides.company_description ?? descriptionInput?.value?.trim() ?? "",
     preview_result: overrides.preview_result ?? baseMeta.preview_result ?? null,
     locked_result_teasers: overrides.locked_result_teasers ?? baseMeta.locked_result_teasers ?? [],
     locked_result_count: overrides.locked_result_count ?? baseMeta.locked_result_count ?? 0,
@@ -406,6 +407,22 @@ function redirectToUrl(url) {
   }
   if (window.location) {
     window.location.href = url;
+  }
+}
+
+function applyBillingActionAvailability(accessState = latestMatchMeta?.access_state || "preview") {
+  const isPendingUnlock = accessState === "pending_unlock";
+  if (guestCheckoutButton) {
+    guestCheckoutButton.disabled = isPendingUnlock;
+  }
+  if (subscriptionCheckoutButton) {
+    subscriptionCheckoutButton.disabled = isPendingUnlock;
+  }
+  if (creditUnlockButton) {
+    creditUnlockButton.disabled = isPendingUnlock;
+  }
+  if (refreshAccessButton) {
+    refreshAccessButton.disabled = false;
   }
 }
 
@@ -1053,6 +1070,7 @@ function renderBillingActions(payload) {
   } else {
     setPendingUnlockMessage("");
   }
+  applyBillingActionAvailability(accessState);
 }
 
 function renderMatchExperience(payload) {
@@ -1604,6 +1622,11 @@ async function refreshArtifactAccess({ scheduleNextPoll = false } = {}) {
         checkout_pending: false,
       });
       setBillingMessage("Unlock confirmed. Reloading the full search results.");
+      const restoredContext = readCheckoutContext();
+      if (restoredContext?.company_description) {
+        descriptionInput.value = restoredContext.company_description;
+        updateWebsiteGenerationControls();
+      }
       await submitMatch({ preventDefault() {} });
       return;
     }
@@ -1627,8 +1650,12 @@ async function refreshArtifactAccess({ scheduleNextPoll = false } = {}) {
     clearUnlockPoll();
     setBillingMessage(error.message || "Could not refresh unlock status.", "error");
     setPendingUnlockMessage("We could not refresh unlock status right now. Try again in a moment.");
+    applyBillingActionAvailability(latestMatchMeta?.access_state || "preview");
   } finally {
     setBillingActionsDisabled(false);
+    if (latestMatchMeta?.access_state === "pending_unlock") {
+      applyBillingActionAvailability("pending_unlock");
+    }
   }
 }
 
@@ -1670,9 +1697,15 @@ async function launchGuestCheckout() {
     setBillingMessage("Checkout started. Redirecting to payment.");
     redirectToUrl(payload.checkout_url);
   } catch (error) {
+    persistCheckoutContext({
+      email,
+      checkout_pending: false,
+      access_state: latestMatchMeta?.access_state || "preview",
+    });
     setBillingMessage(error.message || "Could not start checkout.", "error");
   } finally {
     setBillingActionsDisabled(false);
+    applyBillingActionAvailability(latestMatchMeta?.access_state || "preview");
   }
 }
 
@@ -1704,9 +1737,15 @@ async function launchSubscriptionCheckout() {
     setBillingMessage("Subscription checkout started. Redirecting now.");
     redirectToUrl(payload.checkout_url);
   } catch (error) {
+    persistCheckoutContext({
+      email,
+      checkout_pending: false,
+      access_state: latestMatchMeta?.access_state || "preview",
+    });
     setBillingMessage(error.message || "Could not start subscription checkout.", "error");
   } finally {
     setBillingActionsDisabled(false);
+    applyBillingActionAvailability(latestMatchMeta?.access_state || "preview");
   }
 }
 
@@ -1755,6 +1794,7 @@ async function unlockWithSubscriberCredit() {
     setBillingMessage(error.message || "Could not unlock this artifact with a credit.", "error");
   } finally {
     setBillingActionsDisabled(false);
+    applyBillingActionAvailability(latestMatchMeta?.access_state || "preview");
   }
 }
 
@@ -1832,6 +1872,10 @@ function restoreCheckoutContextOnStartup() {
   }
 
   syncBillingEmailInputs(savedContext.email || "");
+  if (savedContext.company_description) {
+    descriptionInput.value = savedContext.company_description;
+    updateWebsiteGenerationControls();
+  }
   renderMatchExperience({
     ...savedContext,
     access_state: savedContext.access_state || (savedContext.checkout_pending ? "pending_unlock" : "preview"),
