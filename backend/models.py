@@ -144,6 +144,7 @@ class MatchResponse(BaseModel):
     locked_result_count: int = 0
     access_state: MatchAccessState = MatchAccessState.PREVIEW
     artifact_id: str | None = None
+    billing_available: bool = True
 
 
 class IndexStatus(BaseModel):

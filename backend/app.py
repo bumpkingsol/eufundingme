@@ -154,12 +154,6 @@ def build_preview_match_response(
     )
 
 
-def _match_response_payload(response: MatchResponse, *, billing_available: bool) -> dict[str, object]:
-    payload = response.model_dump(mode="json")
-    payload["billing_available"] = billing_available
-    return payload
-
-
 def build_match_service(settings: Settings, app_state: AppState) -> MatchService:
     embedding_service = None
     scorer = None
@@ -599,7 +593,7 @@ def create_app(
                 }
             ),
         )
-        return JSONResponse(content=_match_response_payload(response, billing_available=billing_available))
+        return response.model_copy(update={"billing_available": billing_available})
 
     @app.post("/api/billing/guest-checkout", response_model=GuestCheckoutResponse)
     def guest_checkout(
