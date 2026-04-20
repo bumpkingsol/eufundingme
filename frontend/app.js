@@ -4,9 +4,8 @@ const DEFAULT_EMPTY_STATE =
 const MIN_DESCRIPTION_LENGTH = 20;
 const PROFILE_RESOLVE_DEBOUNCE_MS = 450;
 const MAX_COMPARISON_GRANTS = 3;
-const CHECKOUT_CONTEXT_STORAGE_KEY = "eufundingme.checkoutContext";
 const BILLING_OUTAGE_MESSAGE =
-  "Unlocks are temporarily unavailable. Preview stays available while billing recovers.";
+  "The open-source app stops at the free preview. Use the hosted product to unlock the remaining results.";
 
 const form = document.querySelector("#match-form");
 const descriptionInput = document.querySelector("#company-description");
@@ -50,22 +49,7 @@ const alertEmail = document.querySelector("#alert-email");
 const alertStatus = document.querySelector("#alert-status");
 const billingPanel = document.querySelector("#billing-panel");
 const lockedResultsSummary = document.querySelector("#locked-results-summary");
-const pendingUnlockStatus = document.querySelector("#pending-unlock-status");
 const billingMessage = document.querySelector("#billing-message");
-const unlockCtaArea = document.querySelector("#unlock-cta-area");
-const billingEmailInput = document.querySelector("#billing-email");
-const guestCheckoutButton = document.querySelector("#guest-checkout-button");
-const subscriptionCheckoutButton = document.querySelector("#subscription-checkout-button");
-const creditUnlockButton = document.querySelector("#credit-unlock-button");
-const refreshAccessButton = document.querySelector("#refresh-access-button");
-const accountDashboardSummary = document.querySelector("#account-dashboard-summary");
-const dashboardEmailInput = document.querySelector("#dashboard-email");
-const dashboardLoadButton = document.querySelector("#dashboard-load-button");
-const dashboardMessage = document.querySelector("#dashboard-message");
-const accountDashboardPanel = document.querySelector("#account-dashboard-panel");
-const dashboardCreditsRemaining = document.querySelector("#dashboard-credits-remaining");
-const dashboardManageLink = document.querySelector("#dashboard-manage-link");
-const dashboardManageEmpty = document.querySelector("#dashboard-manage-empty");
 
 let latestStatus = null;
 let latestResults = [];
@@ -79,7 +63,6 @@ let latestResolveToken = 0;
 let currentJourneyRequestId = null;
 let currentJourneySeed = null;
 let latestMatchMeta = null;
-let unlockPollHandle = null;
 const resultsById = new Map();
 const grantDetailsById = new Map();
 const loadingGrantIds = new Set();
@@ -261,175 +244,16 @@ function setBillingMessage(message = "", tone = "info") {
   billingMessage.classList.toggle("is-error", tone === "error");
 }
 
-function setPendingUnlockMessage(message = "") {
-  if (!pendingUnlockStatus) {
-    return;
-  }
-  pendingUnlockStatus.hidden = !message;
-  pendingUnlockStatus.textContent = message;
-}
-
-function clearUnlockPoll() {
-  if (unlockPollHandle !== null) {
-    window.clearTimeout(unlockPollHandle);
-    unlockPollHandle = null;
-  }
-}
-
 function hideBillingPanel() {
-  clearUnlockPoll();
   if (billingPanel) {
     billingPanel.hidden = true;
   }
-  setPendingUnlockMessage("");
   setBillingMessage("");
 }
 
 function showBillingPanel() {
   if (billingPanel) {
     billingPanel.hidden = false;
-  }
-}
-
-function getBillingEmailValue() {
-  return billingEmailInput?.value?.trim() || dashboardEmailInput?.value?.trim() || "";
-}
-
-function syncBillingEmailInputs(value) {
-  if (billingEmailInput && value && !billingEmailInput.value.trim()) {
-    billingEmailInput.value = value;
-  }
-  if (dashboardEmailInput && value && !dashboardEmailInput.value.trim()) {
-    dashboardEmailInput.value = value;
-  }
-}
-
-function normalizeFingerprintSource() {
-  return descriptionInput?.value?.trim() || "";
-}
-
-async function computeSearchFingerprint() {
-  const normalized = normalizeFingerprintSource().trim().replace(/\s+/g, " ").toLowerCase();
-  if (!normalized) {
-    return "";
-  }
-  if (globalThis.crypto?.subtle && globalThis.TextEncoder) {
-    const data = new TextEncoder().encode(normalized);
-    const digest = await globalThis.crypto.subtle.digest("SHA-256", data);
-    return Array.from(new Uint8Array(digest))
-      .map((value) => value.toString(16).padStart(2, "0"))
-      .join("");
-  }
-  return normalized;
-}
-
-function setBillingActionsDisabled(isDisabled) {
-  guestCheckoutButton && (guestCheckoutButton.disabled = isDisabled);
-  subscriptionCheckoutButton && (subscriptionCheckoutButton.disabled = isDisabled);
-  creditUnlockButton && (creditUnlockButton.disabled = isDisabled);
-  refreshAccessButton && (refreshAccessButton.disabled = isDisabled);
-}
-
-function getPersistentStorage() {
-  try {
-    return window.localStorage || globalThis.localStorage || null;
-  } catch (_error) {
-    return null;
-  }
-}
-
-function buildCheckoutContextSnapshot(overrides = {}) {
-  const baseMeta = latestMatchMeta || {};
-  return {
-    artifact_id: overrides.artifact_id ?? baseMeta.artifact_id ?? null,
-    access_state: overrides.access_state ?? baseMeta.access_state ?? "preview",
-    email: overrides.email ?? getBillingEmailValue() ?? "",
-    company_description: overrides.company_description ?? descriptionInput?.value?.trim() ?? "",
-    preview_result: overrides.preview_result ?? baseMeta.preview_result ?? null,
-    locked_result_teasers: overrides.locked_result_teasers ?? baseMeta.locked_result_teasers ?? [],
-    locked_result_count: overrides.locked_result_count ?? baseMeta.locked_result_count ?? 0,
-    artifact_unlocked: overrides.artifact_unlocked ?? baseMeta.artifact_unlocked ?? false,
-    billing_available: overrides.billing_available ?? baseMeta.billing_available ?? true,
-    checkout_pending: overrides.checkout_pending ?? false,
-  };
-}
-
-function persistCheckoutContext(overrides = {}) {
-  const storage = getPersistentStorage();
-  if (!storage) {
-    return;
-  }
-  const snapshot = buildCheckoutContextSnapshot(overrides);
-  if (!snapshot.artifact_id) {
-    return;
-  }
-  try {
-    storage.setItem(CHECKOUT_CONTEXT_STORAGE_KEY, JSON.stringify(snapshot));
-  } catch (_error) {
-  }
-}
-
-function clearCheckoutContext() {
-  const storage = getPersistentStorage();
-  if (!storage) {
-    return;
-  }
-  try {
-    storage.removeItem(CHECKOUT_CONTEXT_STORAGE_KEY);
-  } catch (_error) {
-  }
-}
-
-function readCheckoutContext() {
-  const storage = getPersistentStorage();
-  if (!storage) {
-    return null;
-  }
-  try {
-    const value = storage.getItem(CHECKOUT_CONTEXT_STORAGE_KEY);
-    if (!value) {
-      return null;
-    }
-    const parsed = JSON.parse(value);
-    if (!parsed || typeof parsed !== "object" || !parsed.artifact_id) {
-      return null;
-    }
-    return parsed;
-  } catch (_error) {
-    return null;
-  }
-}
-
-function redirectToUrl(url) {
-  if (!url) {
-    return;
-  }
-  if (window.location && typeof window.location.assign === "function") {
-    window.location.assign(url);
-    return;
-  }
-  if (window.location) {
-    window.location.href = url;
-  }
-}
-
-function applyBillingActionAvailability(
-  accessState = latestMatchMeta?.access_state || "preview",
-  billingAvailable = latestMatchMeta?.billing_available !== false,
-) {
-  const isPendingUnlock = accessState === "pending_unlock";
-  const isBillingUnavailable = billingAvailable === false;
-  if (guestCheckoutButton) {
-    guestCheckoutButton.disabled = isPendingUnlock || isBillingUnavailable;
-  }
-  if (subscriptionCheckoutButton) {
-    subscriptionCheckoutButton.disabled = isPendingUnlock || isBillingUnavailable;
-  }
-  if (creditUnlockButton) {
-    creditUnlockButton.disabled = isPendingUnlock || isBillingUnavailable;
-  }
-  if (refreshAccessButton) {
-    refreshAccessButton.disabled = false;
   }
 }
 
@@ -821,9 +645,7 @@ function buildResultCard(result, index, { preview = false, artifactUnlocked = tr
         ${artifactUnlocked ? `<button class="secondary-button" type="button" onclick="toggleComparisonGrant('${escapeHtml(result.grant_id)}')">
           ${comparisonGrantIds.includes(result.grant_id) ? "Remove favorite" : "Add to favorites"}
         </button>` : ""}
-        <button class="export-button" type="button" onclick="exportApplicationBrief('${escapeHtml(result.grant_id)}')" ${
-          artifactUnlocked ? "" : 'disabled aria-disabled="true"'
-        }>${artifactUnlocked ? "Export application brief" : "Export brief (locked)"}</button>
+        <button class="export-button" type="button" onclick="exportApplicationBrief('${escapeHtml(result.grant_id)}')">Export application brief</button>
         <a href="${escapeHtml(result.portal_url)}" target="_blank" rel="noreferrer">Open EC portal</a>
       </div>
 
@@ -832,7 +654,7 @@ function buildResultCard(result, index, { preview = false, artifactUnlocked = tr
   `;
 }
 
-function buildLockedTeaserCard(teaser, index, { billingAvailable = true } = {}) {
+function buildLockedTeaserCard(teaser, index) {
   const teaserMeta = [
     teaser.fit_score_band && `<span class="meta-pill">${escapeHtml(teaser.fit_score_band)}</span>`,
     teaser.deadline && `<span class="meta-pill">Deadline ${escapeHtml(teaser.deadline)}</span>`,
@@ -859,34 +681,26 @@ function buildLockedTeaserCard(teaser, index, { billingAvailable = true } = {}) 
         </div>
       </div>
       <div class="meta-row result-actions">
-        <button class="secondary-button" type="button" onclick="launchGuestCheckout()" ${
-          billingAvailable ? "" : "disabled aria-disabled=\"true\""
-        }>Unlock full results</button>
+        <a class="secondary-button" href="https://fundingme.eu" target="_blank" rel="noreferrer">View hosted product</a>
       </div>
     </article>
   `;
 }
 
-function buildPreviewPaywallCard(payload, { billingAvailable = true } = {}) {
+function buildPreviewPaywallCard(payload) {
   const lockedCount = Number(payload?.locked_result_count || payload?.locked_result_teasers?.length || 0);
   const noun = lockedCount === 1 ? "match" : "matches";
-  const outageCopy = billingAvailable
-    ? ""
-    : `<p class="results-empty-copy results-empty-copy--warning">${escapeHtml(BILLING_OUTAGE_MESSAGE)}</p>`;
   return `
     <article class="result-card result-card--paywall">
       <div class="result-copy">
         <p class="results-empty-title">${lockedCount} more ${noun} ready to unlock</p>
         <p class="results-empty-copy">
-          This preview shows the strongest visible result. Unlock the rest of the search to reveal the remaining shortlist and export the application brief.
+          This open-source preview shows the strongest visible result. Use the hosted product to reveal the remaining shortlist and the full paid workflow.
         </p>
-        ${outageCopy}
+        <p class="results-empty-copy results-empty-copy--warning">${escapeHtml(BILLING_OUTAGE_MESSAGE)}</p>
       </div>
       <div class="meta-row result-actions">
-        <button type="button" onclick="launchGuestCheckout()" ${billingAvailable ? "" : "disabled aria-disabled=\"true\""}>Unlock full results</button>
-        <button type="button" class="secondary-button" onclick="launchSubscriptionCheckout()" ${
-          billingAvailable ? "" : "disabled aria-disabled=\"true\""
-        }>Subscribe for credits</button>
+        <a href="https://fundingme.eu" target="_blank" rel="noreferrer">Open hosted product</a>
       </div>
     </article>
   `;
@@ -1037,7 +851,6 @@ function renderPreviewResult(payload) {
 function renderLockedTeasers(payload) {
   const lockedTeasers = payload?.locked_result_teasers || [];
   const lockedCount = Number(payload?.locked_result_count || lockedTeasers.length || 0);
-  const billingAvailable = payload?.billing_available !== false;
   const summaryCopy =
     lockedCount > 0
       ? `${lockedCount} more ${lockedCount === 1 ? "match is" : "matches are"} ready to unlock.`
@@ -1047,19 +860,15 @@ function renderLockedTeasers(payload) {
   if (lockedResultsSummary) {
     lockedResultsSummary.textContent = summaryCopy;
   }
-  if (unlockCtaArea) {
-    unlockCtaArea.hidden = false;
-  }
 
   const teaserMarkup = lockedTeasers
-    .map((teaser, index) => buildLockedTeaserCard(teaser, index, { billingAvailable }))
+    .map((teaser, index) => buildLockedTeaserCard(teaser, index))
     .join("");
-  resultsList.innerHTML += buildPreviewPaywallCard(payload, { billingAvailable }) + teaserMarkup;
+  resultsList.innerHTML += buildPreviewPaywallCard(payload) + teaserMarkup;
 }
 
 function renderUnlockedResults(payload) {
   hideBillingPanel();
-  clearCheckoutContext();
   renderFullResults(payload?.results || [], payload?.indexed_grants || 0, {
     ...payload,
     access_state: "unlocked",
@@ -1068,9 +877,7 @@ function renderUnlockedResults(payload) {
 }
 
 function renderBillingActions(payload) {
-  const accessState = payload?.access_state || "preview";
-  const billingAvailable = payload?.billing_available !== false;
-  if (accessState === "unlocked") {
+  if (payload?.access_state === "unlocked") {
     hideBillingPanel();
     return;
   }
@@ -1082,34 +889,15 @@ function renderBillingActions(payload) {
         ? `${lockedCount} more ${lockedCount === 1 ? "match" : "matches"} ready to unlock`
         : "Unlock required for the full search";
   }
-  if (accessState === "pending_unlock") {
-    setPendingUnlockMessage("Payment is processing. Refresh unlock status in a moment.");
-    setBillingMessage("");
-  } else if (accessState === "expired") {
-    setPendingUnlockMessage("This unlock expired. Run the search again or unlock this artifact again.");
-    setBillingMessage("");
-  } else if (!billingAvailable) {
-    setPendingUnlockMessage(BILLING_OUTAGE_MESSAGE);
-    setBillingMessage(BILLING_OUTAGE_MESSAGE, "error");
-  } else {
-    setPendingUnlockMessage("");
-    setBillingMessage("");
-  }
-  applyBillingActionAvailability(accessState, billingAvailable);
+  setBillingMessage(BILLING_OUTAGE_MESSAGE);
 }
 
 function renderMatchExperience(payload) {
   latestMatchMeta = {
     ...(payload || {}),
     artifact_unlocked: payload?.artifact_unlocked ?? payload?.access_state === "unlocked",
-    billing_available: payload?.billing_available ?? true,
+    billing_available: payload?.billing_available ?? false,
   };
-  if (latestMatchMeta?.artifact_id) {
-    persistCheckoutContext({
-      checkout_pending: Boolean(latestMatchMeta?.checkout_pending || latestMatchMeta?.access_state === "pending_unlock"),
-      billing_available: latestMatchMeta.billing_available,
-    });
-  }
   setResultsBusy(false);
   comparisonGrantIds.length = latestMatchMeta?.artifact_unlocked ? comparisonGrantIds.length : 0;
   renderComparisonPanel();
@@ -1125,15 +913,9 @@ function renderMatchExperience(payload) {
   renderBillingActions(latestMatchMeta);
 
   const lockedCount = Number(latestMatchMeta.locked_result_count || latestMatchMeta.locked_result_teasers?.length || 0);
-  if (latestMatchMeta.access_state === "pending_unlock") {
-    resultsMeta.textContent = "Unlock pending. Polling for access confirmation.";
-  } else if (latestMatchMeta.access_state === "expired") {
-    resultsMeta.textContent = "Unlock expired. The preview is still available.";
-  } else {
-    resultsMeta.textContent = lockedCount
-      ? `Showing 1 preview result. ${lockedCount} more ${lockedCount === 1 ? "match" : "matches"} ready to unlock.`
-      : "Showing the visible preview result.";
-  }
+  resultsMeta.textContent = lockedCount
+    ? `Showing 1 preview result. ${lockedCount} more ${lockedCount === 1 ? "match" : "matches"} are available in the hosted product.`
+    : "Showing the visible preview result.";
 }
 
 function isPreviewAwareMatchPayload(payload) {
@@ -1602,338 +1384,9 @@ function toggleComparisonGrant(grantId) {
   renderComparisonPanel();
 }
 
-async function fetchArtifactAccess() {
-  const artifactId = latestMatchMeta?.artifact_id;
-  if (!artifactId) {
-    throw new Error("Run a search first so there is an artifact to unlock.");
-  }
-
-  const email = getBillingEmailValue();
-  const fingerprint = await computeSearchFingerprint();
-  const params = new URLSearchParams();
-  if (email) {
-    params.set("email", email);
-  }
-  if (fingerprint) {
-    params.set("fingerprint", fingerprint);
-  }
-
-  const response = await fetch(`/api/search-artifacts/${encodeURIComponent(artifactId)}/access?${params.toString()}`, {
-    headers: {
-      "X-Request-ID": ensureJourneyRequestId(),
-    },
-  });
-  if (!response.ok) {
-    const errorPayload = await response.json().catch(() => ({}));
-    throw new Error(getValidationMessage(errorPayload) || "Could not read unlock status.");
-  }
-  return response.json();
-}
-
-async function refreshArtifactAccess({ scheduleNextPoll = false } = {}) {
-  setBillingActionsDisabled(true);
-  try {
-    const access = await fetchArtifactAccess();
-    latestMatchMeta = {
-      ...(latestMatchMeta || {}),
-      access_state: access.access_state || access.status || "preview",
-      artifact_unlocked: Boolean(access.has_access),
-      access_status: access.status || null,
-      access_expires_at: access.expires_at || null,
-    };
-
-    if (latestMatchMeta.artifact_unlocked) {
-      persistCheckoutContext({
-        access_state: latestMatchMeta.access_state,
-        artifact_unlocked: true,
-        checkout_pending: false,
-      });
-      setBillingMessage("Unlock confirmed. Reloading the full search results.");
-      const restoredContext = readCheckoutContext();
-      if (restoredContext?.company_description) {
-        descriptionInput.value = restoredContext.company_description;
-        updateWebsiteGenerationControls();
-      }
-      await submitMatch({ preventDefault() {} });
-      return;
-    }
-
-    persistCheckoutContext({
-      access_state: latestMatchMeta.access_state,
-      artifact_unlocked: latestMatchMeta.artifact_unlocked,
-      checkout_pending: (access.access_state || access.status) === "pending_unlock",
-    });
-    renderMatchExperience(latestMatchMeta);
-    if ((access.access_state || access.status) === "pending_unlock") {
-      setPendingUnlockMessage("Payment is still being confirmed. We will keep checking.");
-      if (scheduleNextPoll) {
-        clearUnlockPoll();
-        unlockPollHandle = window.setTimeout(() => refreshArtifactAccess({ scheduleNextPoll: true }), 3000);
-      }
-    } else {
-      clearUnlockPoll();
-    }
-  } catch (error) {
-    clearUnlockPoll();
-    setBillingMessage(error.message || "Could not refresh unlock status.", "error");
-    setPendingUnlockMessage("We could not refresh unlock status right now. Try again in a moment.");
-    applyBillingActionAvailability(latestMatchMeta?.access_state || "preview");
-  } finally {
-    setBillingActionsDisabled(false);
-    if (latestMatchMeta?.access_state === "pending_unlock") {
-      applyBillingActionAvailability("pending_unlock");
-    }
-  }
-}
-
-async function launchGuestCheckout() {
-  if (latestMatchMeta?.billing_available === false) {
-    setBillingMessage(BILLING_OUTAGE_MESSAGE, "error");
-    return;
-  }
-  const artifactId = latestMatchMeta?.artifact_id;
-  if (!artifactId) {
-    setBillingMessage("Run a search before starting checkout.", "error");
-    return;
-  }
-  const email = getBillingEmailValue();
-  if (!email) {
-    setBillingMessage("Add an email address before starting checkout.", "error");
-    billingEmailInput?.focus();
-    return;
-  }
-
-  setBillingActionsDisabled(true);
-  setBillingMessage("");
-  try {
-    syncBillingEmailInputs(email);
-    persistCheckoutContext({ email, checkout_pending: true });
-    const response = await fetch("/api/billing/guest-checkout", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Request-ID": ensureJourneyRequestId(),
-      },
-      body: JSON.stringify({
-        artifact_id: artifactId,
-        fingerprint: await computeSearchFingerprint(),
-        email,
-      }),
-    });
-    if (!response.ok) {
-      const errorPayload = await response.json().catch(() => ({}));
-      throw new Error(getValidationMessage(errorPayload) || "Could not start checkout.");
-    }
-    const payload = await response.json();
-    setBillingMessage("Checkout started. Redirecting to payment.");
-    redirectToUrl(payload.checkout_url);
-  } catch (error) {
-    persistCheckoutContext({
-      email,
-      checkout_pending: false,
-      access_state: latestMatchMeta?.access_state || "preview",
-    });
-    setBillingMessage(error.message || "Could not start checkout.", "error");
-  } finally {
-    setBillingActionsDisabled(false);
-    applyBillingActionAvailability(latestMatchMeta?.access_state || "preview");
-  }
-}
-
-async function launchSubscriptionCheckout() {
-  if (latestMatchMeta?.billing_available === false) {
-    setBillingMessage(BILLING_OUTAGE_MESSAGE, "error");
-    return;
-  }
-  const email = getBillingEmailValue();
-  if (!email) {
-    setBillingMessage("Add an email address before starting subscription checkout.", "error");
-    billingEmailInput?.focus();
-    return;
-  }
-
-  setBillingActionsDisabled(true);
-  try {
-    syncBillingEmailInputs(email);
-    persistCheckoutContext({ email, checkout_pending: true });
-    const response = await fetch("/api/billing/subscription-checkout", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Request-ID": ensureJourneyRequestId(),
-      },
-      body: JSON.stringify({ email }),
-    });
-    if (!response.ok) {
-      const errorPayload = await response.json().catch(() => ({}));
-      throw new Error(getValidationMessage(errorPayload) || "Could not start subscription checkout.");
-    }
-    const payload = await response.json();
-    setBillingMessage("Subscription checkout started. Redirecting now.");
-    redirectToUrl(payload.checkout_url);
-  } catch (error) {
-    persistCheckoutContext({
-      email,
-      checkout_pending: false,
-      access_state: latestMatchMeta?.access_state || "preview",
-    });
-    setBillingMessage(error.message || "Could not start subscription checkout.", "error");
-  } finally {
-    setBillingActionsDisabled(false);
-    applyBillingActionAvailability(latestMatchMeta?.access_state || "preview");
-  }
-}
-
-async function unlockWithSubscriberCredit() {
-  if (latestMatchMeta?.billing_available === false) {
-    setBillingMessage(BILLING_OUTAGE_MESSAGE, "error");
-    return;
-  }
-  const artifactId = latestMatchMeta?.artifact_id;
-  if (!artifactId) {
-    setBillingMessage("Run a search before using a subscriber credit.", "error");
-    return;
-  }
-  const email = getBillingEmailValue();
-  if (!email) {
-    setBillingMessage("Add your subscriber email before using a credit.", "error");
-    return;
-  }
-
-  setBillingActionsDisabled(true);
-  try {
-    const response = await fetch(`/api/search-artifacts/${encodeURIComponent(artifactId)}/unlock-with-credit`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Request-ID": ensureJourneyRequestId(),
-      },
-      body: JSON.stringify({
-        email,
-        fingerprint: await computeSearchFingerprint(),
-      }),
-    });
-    if (!response.ok) {
-      const errorPayload = await response.json().catch(() => ({}));
-      throw new Error(getValidationMessage(errorPayload) || "Could not unlock this artifact with a credit.");
-    }
-    const payload = await response.json();
-    latestMatchMeta = {
-      ...(latestMatchMeta || {}),
-      access_state: payload.access_state || payload.status || "preview",
-      artifact_unlocked: Boolean(payload.has_access),
-    };
-    if (payload.has_access) {
-      setBillingMessage("Credit applied. Loading unlocked results.");
-      await submitMatch({ preventDefault() {} });
-      return;
-    }
-    renderMatchExperience(latestMatchMeta);
-  } catch (error) {
-    setBillingMessage(error.message || "Could not unlock this artifact with a credit.", "error");
-  } finally {
-    setBillingActionsDisabled(false);
-    applyBillingActionAvailability(latestMatchMeta?.access_state || "preview");
-  }
-}
-
-async function loadAccountDashboard() {
-  const email = dashboardEmailInput?.value?.trim() || billingEmailInput?.value?.trim() || "";
-  if (!email) {
-    if (dashboardMessage) {
-      dashboardMessage.textContent = "Add an email address before loading the dashboard.";
-    }
-    dashboardEmailInput?.focus();
-    return;
-  }
-
-  dashboardLoadButton && (dashboardLoadButton.disabled = true);
-  if (dashboardMessage) {
-    dashboardMessage.textContent = "Loading account dashboard…";
-  }
-
-  try {
-    syncBillingEmailInputs(email);
-    const response = await fetch(`/api/account/dashboard?email=${encodeURIComponent(email)}`, {
-      headers: {
-        "X-Request-ID": ensureJourneyRequestId(),
-      },
-    });
-    if (!response.ok) {
-      const errorPayload = await response.json().catch(() => ({}));
-      throw new Error(getValidationMessage(errorPayload) || "Could not load account dashboard.");
-    }
-
-    const payload = await response.json();
-    if (accountDashboardPanel) {
-      accountDashboardPanel.hidden = false;
-    }
-    if (dashboardCreditsRemaining) {
-      dashboardCreditsRemaining.textContent =
-        payload.credits_remaining !== null && payload.credits_remaining !== undefined
-          ? String(payload.credits_remaining)
-          : "—";
-    }
-    if (dashboardManageLink) {
-      if (payload.dashboard_url) {
-        dashboardManageLink.hidden = false;
-        dashboardManageLink.href = payload.dashboard_url;
-      } else {
-        dashboardManageLink.hidden = true;
-        dashboardManageLink.removeAttribute("href");
-      }
-    }
-    if (dashboardManageEmpty) {
-      dashboardManageEmpty.hidden = Boolean(payload.dashboard_url);
-    }
-    if (accountDashboardSummary) {
-      accountDashboardSummary.textContent =
-        payload.credits_remaining !== null && payload.credits_remaining !== undefined
-          ? `${payload.credits_remaining} credits available`
-          : "Dashboard loaded";
-    }
-    if (dashboardMessage) {
-      dashboardMessage.textContent = "Dashboard loaded.";
-    }
-  } catch (error) {
-    if (dashboardMessage) {
-      dashboardMessage.textContent = error.message || "Could not load account dashboard.";
-    }
-  } finally {
-    dashboardLoadButton && (dashboardLoadButton.disabled = false);
-  }
-}
-
-function restoreCheckoutContextOnStartup() {
-  const savedContext = readCheckoutContext();
-  if (!savedContext) {
-    return;
-  }
-
-  syncBillingEmailInputs(savedContext.email || "");
-  if (savedContext.company_description) {
-    descriptionInput.value = savedContext.company_description;
-    updateWebsiteGenerationControls();
-  }
-  renderMatchExperience({
-    ...savedContext,
-    access_state: savedContext.access_state || (savedContext.checkout_pending ? "pending_unlock" : "preview"),
-  });
-
-  if (savedContext.checkout_pending || savedContext.access_state === "pending_unlock") {
-    setPendingUnlockMessage("Unlock pending. Checking for payment confirmation…");
-    clearUnlockPoll();
-    void refreshArtifactAccess({ scheduleNextPoll: true });
-  }
-}
-
 async function exportApplicationBrief(grantId) {
   const matchResult = resultsById.get(grantId);
   if (!matchResult) {
-    return;
-  }
-  if (!latestMatchMeta?.artifact_unlocked) {
-    setBillingMessage("Unlock this search to export the application brief.", "error");
     return;
   }
   const exportWindow = window.open("", "_blank");
@@ -2110,10 +1563,6 @@ async function submitMatch(event) {
       setFormFeedback(`Match completed. Showing ${payload.results?.length || 0} shortlisted grants.`);
       renderResults(payload.results || [], payload.indexed_grants || 0, payload);
     }
-    if (payload.access_state === "pending_unlock") {
-      clearUnlockPoll();
-      unlockPollHandle = window.setTimeout(() => refreshArtifactAccess({ scheduleNextPoll: true }), 2500);
-    }
   } catch (error) {
     console.error(error);
     const message = error.message || "Matching failed.";
@@ -2168,11 +1617,6 @@ descriptionInput.addEventListener("blur", () => {
 quickFillOpenAIButton.addEventListener("click", applyQuickFillDemoProfile);
 generateDescriptionButton.addEventListener("click", applyWebsiteDescriptionFromUrl);
 agentHandoffCopyButton.addEventListener("click", copyAgentHandoffInstructions);
-guestCheckoutButton?.addEventListener("click", launchGuestCheckout);
-subscriptionCheckoutButton?.addEventListener("click", launchSubscriptionCheckout);
-creditUnlockButton?.addEventListener("click", unlockWithSubscriberCredit);
-refreshAccessButton?.addEventListener("click", () => refreshArtifactAccess({ scheduleNextPoll: true }));
-dashboardLoadButton?.addEventListener("click", loadAccountDashboard);
 agentHandoffDisclosure?.addEventListener("toggle", () => {
   if (agentHandoffDisclosure.open) {
     agentHandoffStatus.textContent = "Copy and paste this block into your agent chat.";
@@ -2193,7 +1637,6 @@ form.addEventListener("submit", submitMatch);
 renderDashboardSummary(null);
 renderComparisonPanel();
 showIntroResultsState();
-restoreCheckoutContextOnStartup();
 fetchStatus();
 
 window.grantDetailsById = grantDetailsById;
@@ -2203,11 +1646,5 @@ window.updateStatus = updateStatus;
 window.toggleGrantDetails = toggleGrantDetails;
 window.toggleComparisonGrant = toggleComparisonGrant;
 window.exportApplicationBrief = exportApplicationBrief;
-window.launchGuestCheckout = launchGuestCheckout;
-window.launchSubscriptionCheckout = launchSubscriptionCheckout;
-window.unlockWithSubscriberCredit = unlockWithSubscriberCredit;
-window.loadAccountDashboard = loadAccountDashboard;
-window.refreshArtifactAccess = refreshArtifactAccess;
 globalThis.grantDetailsById = grantDetailsById;
 globalThis.renderMatchExperience = renderMatchExperience;
-globalThis.refreshArtifactAccess = refreshArtifactAccess;

@@ -1037,11 +1037,6 @@ button.is-loading::before {
 
   #quick-fill-openai,
   #match-button,
-  #guest-checkout-button,
-  #subscription-checkout-button,
-  #credit-unlock-button,
-  #refresh-access-button,
-  #dashboard-load-button,
   .result-actions .secondary-button,
   .result-actions .export-button {
     width: 100%;

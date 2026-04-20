@@ -5,7 +5,6 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from backend.app import build_match_service, create_app
-from backend.billing_client import ArtifactAccessPayload, BillingServiceError, CheckoutSessionPayload, CreditUnlockPayload
 from backend.config import Settings
 from backend.live_grants import LiveGrantRetrievalResult
 from backend.models import (
@@ -24,7 +23,6 @@ from backend.state import AppState
 
 def locked_brief_payload():
     return {
-        "artifact_id": "artifact-1",
         "company_description": "We build AI tools for industrial companies.",
         "match_result": {
             "grant_id": "TOPIC-1",
@@ -47,14 +45,6 @@ def locked_brief_payload():
             "source": "browser_topic_detail",
             "fallback_used": False,
         },
-    }
-
-
-def account_context_headers(*, token: str = "opaque-session", email: str = "founder@example.com", fingerprint: str = "fp-1"):
-    return {
-        "Authorization": f"Bearer {token}",
-        "X-Account-Email": email,
-        "X-Artifact-Fingerprint": fingerprint,
     }
 
 
@@ -526,7 +516,7 @@ def test_match_endpoint_returns_preview_and_locked_teasers():
     assert "portal_url" not in teaser
 
 
-def test_match_endpoint_fails_open_when_billing_access_lookup_errors():
+def test_match_returns_preview_only_payload():
     class FakeState:
         def ensure_indexing_started(self) -> None:
             return None
@@ -597,102 +587,7 @@ def test_match_endpoint_fails_open_when_billing_access_lookup_errors():
                 ],
             )
 
-    class FailingBillingClient:
-        def get_artifact_access(self, *, artifact_id: str, email: str | None = None, fingerprint: str | None = None, account_context=None):
-            raise BillingServiceError("billing service request failed")
-
     app = create_app(app_state=FakeState(), match_service=FakeMatchService())
-    app.state.billing_client = FailingBillingClient()
-    client = TestClient(app)
-
-    response = client.post("/api/match", json={"company_description": "We build AI tools across Europe."})
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["access_state"] == "preview"
-    assert payload["preview_result"]["grant_id"] == "TOPIC-1"
-    assert len(payload["results"]) == 1
-    assert payload["results"][0]["grant_id"] == "TOPIC-1"
-    assert payload["locked_result_count"] == 1
-
-
-def test_match_still_returns_preview_when_billing_service_is_down():
-    class FakeState:
-        def ensure_indexing_started(self) -> None:
-            return None
-
-        def get_status(self) -> IndexStatus:
-            return IndexStatus(
-                phase="ready",
-                message="Ready",
-                indexed_grants=2,
-                scanned_prefixes=1,
-                total_prefixes=1,
-                failed_prefixes=0,
-                truncated_prefixes=0,
-                embeddings_ready=True,
-                degraded=False,
-                coverage_complete=True,
-                matching_available=True,
-                degradation_reasons=[],
-            )
-
-        def get_grants(self) -> list[object]:
-            return ["placeholder"]
-
-    class FakeMatchService:
-        def match(
-            self,
-            company_description: str,
-            grants: list[object],
-            now=None,
-            limit: int = 10,
-            base_degradation_reasons=None,
-        ) -> MatchResponse:
-            return MatchResponse(
-                indexed_grants=2,
-                degraded=False,
-                degradation_reasons=[],
-                results=[
-                    MatchResult(
-                        grant_id="TOPIC-1",
-                        title="AI Safety Grant",
-                        status="Open",
-                        deadline="2026-08-01",
-                        days_left=105,
-                        budget="EUR 6.2M",
-                        portal_url="https://example.com/TOPIC-1",
-                        fit_score=92,
-                        why_match="Strong overlap in AI safety deployment.",
-                        application_angle="Lead with trusted deployment across Europe.",
-                        framework_programme="Horizon Europe",
-                        programme_division="Cluster 4",
-                        keywords=["ai", "safety"],
-                    ),
-                    MatchResult(
-                        grant_id="TOPIC-2",
-                        title="Climate Grant",
-                        status="Open",
-                        deadline="2026-08-15",
-                        days_left=119,
-                        budget="EUR 3.0M",
-                        portal_url="https://example.com/TOPIC-2",
-                        fit_score=84,
-                        why_match="Strong fit on climate tooling.",
-                        application_angle="Lead with measurable emissions impact.",
-                        framework_programme="Horizon Europe",
-                        programme_division="Cluster 5",
-                        keywords=["climate"],
-                    ),
-                ],
-            )
-
-    class DownBillingClient:
-        def get_artifact_access(self, *, artifact_id: str, email: str | None = None, fingerprint: str | None = None, account_context=None):
-            raise BillingServiceError("billing service request failed")
-
-    app = create_app(app_state=FakeState(), match_service=FakeMatchService())
-    app.state.billing_client = DownBillingClient()
     client = TestClient(app)
 
     response = client.post("/api/match", json={"company_description": "We build AI tools across Europe."})
@@ -703,6 +598,7 @@ def test_match_still_returns_preview_when_billing_service_is_down():
     assert payload["billing_available"] is False
     assert payload["preview_result"]["grant_id"] == "TOPIC-1"
     assert len(payload["results"]) == 1
+    assert payload["locked_result_count"] == 1
 
 
 def test_match_endpoint_returns_translated_non_english_results():
@@ -1274,352 +1170,9 @@ def test_match_endpoint_keeps_short_description_validation():
     assert response.status_code == 422
 
 
-def test_guest_checkout_endpoint_returns_checkout_url():
-    class FakeBillingClient:
-        def create_guest_unlock_checkout(
-            self,
-            *,
-            artifact_id: str,
-            fingerprint: str | None,
-            email: str | None,
-            account_context=None,
-        ):
-            assert artifact_id == "artifact-1"
-            assert account_context.session_token == "opaque-session"
-            assert email is None
-            assert fingerprint is None
-            return CheckoutSessionPayload(checkout_url="https://checkout.example/guest")
-
-    app = create_app()
-    app.state.billing_client = FakeBillingClient()
-    client = TestClient(app)
-
-    response = client.post(
-        "/api/billing/guest-checkout",
-        headers=account_context_headers(),
-        json={
-            "artifact_id": "artifact-1",
-            "fingerprint": "fp-1",
-            "email": "founder@example.com",
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json()["checkout_url"] == "https://checkout.example/guest"
-
-
-def test_guest_checkout_endpoint_returns_503_when_billing_unavailable():
-    class FailingBillingClient:
-        def create_guest_unlock_checkout(
-            self,
-            *,
-            artifact_id: str,
-            fingerprint: str | None,
-            email: str | None,
-            account_context=None,
-        ):
-            raise BillingServiceError("billing service request failed")
-
-    app = create_app()
-    app.state.billing_client = FailingBillingClient()
-    client = TestClient(app)
-
-    response = client.post(
-        "/api/billing/guest-checkout",
-        headers=account_context_headers(),
-        json={
-            "artifact_id": "artifact-1",
-            "fingerprint": "fp-1",
-            "email": "founder@example.com",
-        },
-    )
-
-    assert response.status_code == 503
-    assert response.json()["detail"]["code"] == "BILLING_UNAVAILABLE"
-
-
-def test_subscription_checkout_endpoint_returns_checkout_url_and_forwards_context():
-    class FakeBillingClient:
-        def create_subscription_checkout(
-            self,
-            *,
-            email: str | None,
-            success_url: str | None = None,
-            cancel_url: str | None = None,
-            account_context=None,
-        ):
-            assert email is None
-            assert success_url == "https://example.com/success"
-            assert cancel_url == "https://example.com/cancel"
-            assert account_context.session_token == "opaque-session"
-            return CheckoutSessionPayload(checkout_url="https://checkout.example/subscription")
-
-    app = create_app()
-    app.state.billing_client = FakeBillingClient()
-    client = TestClient(app)
-
-    response = client.post(
-        "/api/billing/subscription-checkout",
-        headers=account_context_headers(),
-        json={
-            "email": "founder@example.com",
-            "success_url": "https://example.com/success",
-            "cancel_url": "https://example.com/cancel",
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json()["checkout_url"] == "https://checkout.example/subscription"
-
-
-def test_subscription_checkout_endpoint_returns_503_when_billing_unavailable():
-    class FailingBillingClient:
-        def create_subscription_checkout(
-            self,
-            *,
-            email: str | None,
-            success_url: str | None = None,
-            cancel_url: str | None = None,
-            account_context=None,
-        ):
-            raise BillingServiceError("billing service request failed")
-
-    app = create_app()
-    app.state.billing_client = FailingBillingClient()
-    client = TestClient(app)
-
-    response = client.post(
-        "/api/billing/subscription-checkout",
-        headers=account_context_headers(),
-        json={"email": "founder@example.com"},
-    )
-
-    assert response.status_code == 503
-    assert response.json()["detail"]["code"] == "BILLING_UNAVAILABLE"
-
-
-def test_artifact_access_endpoint_reports_pending_unlock():
-    class FakeBillingClient:
-        def get_artifact_access(
-            self,
-            *,
-            artifact_id: str,
-            email: str | None = None,
-            fingerprint: str | None = None,
-            account_context=None,
-        ):
-            assert artifact_id == "artifact-1"
-            assert account_context.session_token == "opaque-session"
-            assert email is None
-            assert fingerprint is None
-            return ArtifactAccessPayload(has_access=False, status="pending_unlock", expires_at="2026-04-20T00:00:00Z")
-
-    app = create_app()
-    app.state.billing_client = FakeBillingClient()
-    client = TestClient(app)
-
-    response = client.get(
-        "/api/search-artifacts/artifact-1/access",
-        headers=account_context_headers(),
-        params={"email": "founder@example.com", "fingerprint": "fp-1"},
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["artifact_id"] == "artifact-1"
-    assert payload["has_access"] is False
-    assert payload["status"] == "pending_unlock"
-    assert payload["access_state"] == "pending_unlock"
-
-
-def test_artifact_access_endpoint_returns_503_when_billing_unavailable():
-    class FailingBillingClient:
-        def get_artifact_access(
-            self,
-            *,
-            artifact_id: str,
-            email: str | None = None,
-            fingerprint: str | None = None,
-            account_context=None,
-        ):
-            raise BillingServiceError("billing service request failed")
-
-    app = create_app()
-    app.state.billing_client = FailingBillingClient()
-    client = TestClient(app)
-
-    response = client.get(
-        "/api/search-artifacts/artifact-1/access",
-        headers=account_context_headers(),
-        params={"email": "founder@example.com", "fingerprint": "fp-1"},
-    )
-
-    assert response.status_code == 503
-    assert response.json()["detail"]["code"] == "BILLING_UNAVAILABLE"
-
-
-def test_credit_unlock_consumes_once_per_artifact():
-    class FakeBillingClient:
-        def __init__(self) -> None:
-            self.consume_calls = 0
-
-        def consume_credit_unlock(
-            self,
-            *,
-            artifact_id: str,
-            email: str | None,
-            fingerprint: str | None = None,
-            account_context=None,
-        ):
-            assert artifact_id == "artifact-1"
-            assert account_context.session_token == "opaque-session"
-            assert email is None
-            assert fingerprint is None
-            self.consume_calls += 1
-            return CreditUnlockPayload(consumed=True)
-
-        def get_artifact_access(
-            self,
-            *,
-            artifact_id: str,
-            email: str | None = None,
-            fingerprint: str | None = None,
-            account_context=None,
-        ):
-            assert artifact_id == "artifact-1"
-            assert account_context.session_token == "opaque-session"
-            assert email is None
-            assert fingerprint is None
-            return ArtifactAccessPayload(has_access=True, status="unlocked", expires_at="2026-04-27T00:00:00Z")
-
-    billing_client = FakeBillingClient()
-    app = create_app()
-    app.state.billing_client = billing_client
-    client = TestClient(app)
-
-    response = client.post(
-        "/api/search-artifacts/artifact-1/unlock-with-credit",
-        headers=account_context_headers(),
-        json={"email": "founder@example.com", "fingerprint": "fp-1"},
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["artifact_id"] == "artifact-1"
-    assert payload["consumed"] is True
-    assert payload["has_access"] is True
-    assert payload["status"] == "unlocked"
-    assert payload["access_state"] == "unlocked"
-    assert billing_client.consume_calls == 1
-
-
-def test_account_dashboard_endpoint_returns_dashboard_payload():
-    class FakeBillingClient:
-        def get_account_dashboard(self, *, email: str | None, account_context=None):
-            assert email is None
-            assert account_context.session_token == "opaque-session"
-            return type("Dashboard", (), {"credits_remaining": 7, "dashboard_url": "https://billing.example/account"})()
-
-    app = create_app()
-    app.state.billing_client = FakeBillingClient()
-    client = TestClient(app)
-
-    response = client.get(
-        "/api/account/dashboard",
-        headers=account_context_headers(),
-        params={"email": "founder@example.com"},
-    )
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "credits_remaining": 7,
-        "dashboard_url": "https://billing.example/account",
-    }
-
-
-def test_account_dashboard_endpoint_returns_503_when_billing_unavailable():
-    class FailingBillingClient:
-        def get_account_dashboard(self, *, email: str | None, account_context=None):
-            raise BillingServiceError("billing service request failed")
-
-    app = create_app()
-    app.state.billing_client = FailingBillingClient()
-    client = TestClient(app)
-
-    response = client.get(
-        "/api/account/dashboard",
-        headers=account_context_headers(),
-        params={"email": "founder@example.com"},
-    )
-
-    assert response.status_code == 503
-    assert response.json()["detail"]["code"] == "BILLING_UNAVAILABLE"
-
-
-def test_application_brief_requires_unlocked_artifact():
-    class FakeBillingClient:
-        def get_artifact_access(
-            self,
-            *,
-            artifact_id: str,
-            email: str | None = None,
-            fingerprint: str | None = None,
-            account_context=None,
-        ):
-            assert artifact_id == "artifact-1"
-            assert account_context.session_token == "opaque-session"
-            return ArtifactAccessPayload(has_access=False, status="pending_unlock")
-
-    app = create_app()
-    app.state.billing_client = FakeBillingClient()
-    client = TestClient(app)
-
-    response = client.post("/api/application-brief", headers=account_context_headers(), json=locked_brief_payload())
-
-    assert response.status_code == 403
-    assert response.json()["detail"]["code"] == "ARTIFACT_LOCKED"
-
-
-def test_application_brief_reports_billing_unavailable_during_gate(monkeypatch):
-    captured = []
-    request_id = "journey-gate-503"
-    monkeypatch.setattr(
-        "backend.app.capture_backend_exception",
-        lambda exc, **kwargs: captured.append((str(exc), kwargs)),
-    )
-
-    class FailingBillingClient:
-        def get_artifact_access(self, *, artifact_id: str, email: str | None = None, fingerprint: str | None = None, account_context=None):
-            raise BillingServiceError("billing service request failed")
-
-    app = create_app()
-    app.state.billing_client = FailingBillingClient()
-    client = TestClient(app)
-
-    response = client.post(
-        "/api/application-brief",
-        headers={**account_context_headers(), "X-Request-ID": request_id},
-        json=locked_brief_payload(),
-    )
-
-    assert response.status_code == 503
-    assert response.json()["detail"]["code"] == "BILLING_UNAVAILABLE"
-    assert captured == [(
-        "billing service request failed",
-        {
-            "component": "billing",
-            "operation": "get_artifact_access",
-            "request_id": request_id,
-            "fallback_used": True,
-            "context": {"artifact_id": "artifact-1"},
-        },
-    )]
-
-
 def test_application_brief_endpoint_returns_markdown_and_sections():
     class FakeBriefService:
-        def generate(self, *, artifact_id, company_description, match_result, grant_detail):
-            assert artifact_id == "artifact-1"
+        def generate(self, *, company_description, match_result, grant_detail):
             assert company_description == "We build AI tools for industrial companies."
             assert match_result["grant_id"] == "TOPIC-1"
             assert grant_detail["grant_id"] == "TOPIC-1"
@@ -1635,20 +1188,7 @@ def test_application_brief_endpoint_returns_markdown_and_sections():
                 },
             )
 
-    class FakeBillingClient:
-        def get_artifact_access(
-            self,
-            *,
-            artifact_id: str,
-            email: str | None = None,
-            fingerprint: str | None = None,
-            account_context=None,
-        ):
-            assert artifact_id == "artifact-1"
-            return ArtifactAccessPayload(has_access=True, status="unlocked", expires_at="2026-04-27T00:00:00Z")
-
     app = create_app()
-    app.state.billing_client = FakeBillingClient()
     app.state.application_brief_service = FakeBriefService()
     client = TestClient(app)
 
@@ -1667,27 +1207,13 @@ def test_application_brief_endpoint_returns_markdown_and_sections():
 
 
 def test_application_brief_endpoint_uses_fallback_generation_without_openai():
-    class FakeBillingClient:
-        def get_artifact_access(
-            self,
-            *,
-            artifact_id: str,
-            email: str | None = None,
-            fingerprint: str | None = None,
-            account_context=None,
-        ):
-            assert artifact_id == "artifact-1"
-            return ArtifactAccessPayload(has_access=True, status="unlocked", expires_at="2026-04-27T00:00:00Z")
-
     app = create_app(settings=Settings(openai_api_key=None))
-    app.state.billing_client = FakeBillingClient()
     client = TestClient(app)
 
     response = client.post(
         "/api/application-brief",
         headers={"X-Request-ID": "journey-fallback"},
         json={
-            "artifact_id": "artifact-1",
             "company_description": "We build AI tools for industrial companies across Europe and support trusted deployment.",
             "match_result": {
                 "grant_id": "TOPIC-1",
@@ -1726,20 +1252,7 @@ def test_application_brief_endpoint_reports_service_failure():
         def generate(self, **_kwargs):
             raise RuntimeError("brief generation failed")
 
-    class FakeBillingClient:
-        def get_artifact_access(
-            self,
-            *,
-            artifact_id: str,
-            email: str | None = None,
-            fingerprint: str | None = None,
-            account_context=None,
-        ):
-            assert artifact_id == "artifact-1"
-            return ArtifactAccessPayload(has_access=True, status="unlocked", expires_at="2026-04-27T00:00:00Z")
-
     app = create_app()
-    app.state.billing_client = FakeBillingClient()
     app.state.application_brief_service = FailingBriefService()
     client = TestClient(app)
 
@@ -1767,13 +1280,7 @@ def test_application_brief_endpoint_binds_request_context_and_captures_failure(m
         lambda exc, **kwargs: captured.append((str(exc), kwargs)),
     )
 
-    class FakeBillingClient:
-        def get_artifact_access(self, *, artifact_id: str, email: str | None = None, fingerprint: str | None = None, account_context=None):
-            assert artifact_id == "artifact-1"
-            return ArtifactAccessPayload(has_access=True, status="unlocked", expires_at="2026-04-27T00:00:00Z")
-
     app = create_app()
-    app.state.billing_client = FakeBillingClient()
     app.state.application_brief_service = FailingBriefService()
     client = TestClient(app)
 
@@ -1800,62 +1307,6 @@ def test_application_brief_endpoint_binds_request_context_and_captures_failure(m
             "context": {"grant_id": "TOPIC-1"},
         },
     )]
-
-
-def test_application_brief_returns_401_when_billing_reports_unauthorized():
-    from backend.billing_client import BillingUnauthorizedError
-
-    class FakeBillingClient:
-        def get_artifact_access(
-            self,
-            *,
-            artifact_id: str,
-            email: str | None = None,
-            fingerprint: str | None = None,
-            account_context=None,
-        ):
-            raise BillingUnauthorizedError("billing service unauthorized")
-
-    app = create_app()
-    app.state.billing_client = FakeBillingClient()
-    client = TestClient(app)
-
-    response = client.post(
-        "/api/application-brief",
-        headers={**account_context_headers(), "X-Request-ID": "journey-auth-401"},
-        json=locked_brief_payload(),
-    )
-
-    assert response.status_code == 401
-    assert response.json()["detail"]["code"] == "BILLING_UNAUTHORIZED"
-
-
-def test_artifact_access_returns_403_when_billing_reports_forbidden():
-    from backend.billing_client import BillingForbiddenError
-
-    class FakeBillingClient:
-        def get_artifact_access(
-            self,
-            *,
-            artifact_id: str,
-            email: str | None = None,
-            fingerprint: str | None = None,
-            account_context=None,
-        ):
-            raise BillingForbiddenError("billing service forbidden")
-
-    app = create_app()
-    app.state.billing_client = FakeBillingClient()
-    client = TestClient(app)
-
-    response = client.get(
-        "/api/search-artifacts/artifact-1/access",
-        headers=account_context_headers(),
-        params={"email": "founder@example.com", "fingerprint": "fp-1"},
-    )
-
-    assert response.status_code == 403
-    assert response.json()["detail"]["code"] == "BILLING_FORBIDDEN"
 
 
 def test_grant_detail_endpoint_returns_normalized_payload():

@@ -7,24 +7,10 @@ from pathlib import Path
 import time
 
 import sentry_sdk
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from .application_brief import ApplicationBriefService
-from .access_control import (
-    http_exception_for_billing_error,
-    require_artifact_access,
-    resolve_account_context,
-    resolve_billing_identity,
-)
-from .billing_client import (
-    ArtifactAccessPayload,
-    BillingForbiddenError,
-    BillingServiceError,
-    BillingServiceUnavailableError,
-    BillingUnauthorizedError,
-    build_billing_client,
-)
 from .config import Settings, load_settings
 from .ec_client import ECSearchClient
 from .embeddings import EmbeddingService, build_grant_embeddings, embedding_shortlist, lexical_shortlist
@@ -36,25 +22,16 @@ from .matcher import MatchService, OpenAIScorer
 from .models import (
     ApplicationBriefRequest,
     ApplicationBriefResponse,
-    AccountDashboardResponse,
-    ArtifactAccessResponse,
-    CreditUnlockRequest,
-    CreditUnlockResponse,
     GrantDetailResponse,
     HealthResponse,
     IndexStatus,
-    GuestCheckoutRequest,
-    GuestCheckoutResponse,
     MatchRequest,
     MatchResponse,
-    MatchAccessState,
     ProfileResolveRequest,
     ProfileResolveResponse,
     ProfileFromWebsiteRequest,
     ProfileFromWebsiteResponse,
     ReadinessResponse,
-    SubscriptionCheckoutRequest,
-    SubscriptionCheckoutResponse,
 )
 from .observability import bind_request_context, capture_backend_exception, initialize_sentry
 from .openai_client import build_openai_client
@@ -99,57 +76,21 @@ def build_application_brief_error(message: str, request_id: str | None = None) -
     return payload
 
 
-def _access_state_for_response(access) -> MatchAccessState:
-    status = getattr(access, "status", "")
-    if getattr(access, "has_access", False):
-        return MatchAccessState.UNLOCKED
-    if status == "expired":
-        return MatchAccessState.EXPIRED
-    if status in {"pending_unlock", "pending_payment", "requires_payment"}:
-        return MatchAccessState.PENDING_UNLOCK
-    return MatchAccessState.PREVIEW
-
-
-def _artifact_access_response(artifact_id: str, access) -> ArtifactAccessResponse:
-    return ArtifactAccessResponse(
-        artifact_id=artifact_id,
-        has_access=getattr(access, "has_access", False),
-        status=getattr(access, "status", "preview"),
-        expires_at=getattr(access, "expires_at", None),
-        access_state=_access_state_for_response(access),
-    )
-
-
-def _identity_for_request(
-    account_context,
-    *,
-    email: str | None = None,
-    fingerprint: str | None = None,
-) -> tuple[str | None, str | None]:
-    return resolve_billing_identity(account_context, email=email, fingerprint=fingerprint)
-
-
 def build_preview_match_response(
     *,
     artifact: SearchArtifact,
-    access,
     request_id: str | None,
     base_response: MatchResponse,
 ) -> MatchResponse:
-    access_state = _access_state_for_response(access)
-    has_access = access_state == MatchAccessState.UNLOCKED
-    results = artifact.full_results if has_access else ([artifact.preview_result] if artifact.preview_result else [])
-    locked_teasers = [] if has_access else [build_locked_result_teaser(result) for result in artifact.locked_results]
-    preview_result = artifact.preview_result
     return base_response.model_copy(
         update={
             "request_id": request_id,
-            "results": results,
-            "preview_result": preview_result,
-            "locked_result_teasers": locked_teasers,
-            "locked_result_count": 0 if has_access else artifact.locked_result_count,
-            "access_state": access_state,
+            "results": [artifact.preview_result] if artifact.preview_result else [],
+            "preview_result": artifact.preview_result,
+            "locked_result_teasers": [build_locked_result_teaser(result) for result in artifact.locked_results],
+            "locked_result_count": artifact.locked_result_count,
             "artifact_id": artifact.id,
+            "billing_available": False,
         }
     )
 
@@ -295,7 +236,6 @@ def create_app(
     app = FastAPI(title="EU Grant Matcher", lifespan=lifespan)
     app.state.settings = active_settings
     app.state.app_state = app_state
-    app.state.billing_client = build_billing_client(active_settings)
     app.state.search_artifact_store = getattr(app_state, "search_artifact_store", SearchArtifactStore())
     app.state.match_service = match_service or build_match_service(active_settings, app_state)
     openai_client = build_openai_client(active_settings)
@@ -554,7 +494,6 @@ def create_app(
             request_id=request_id,
             now=reference_time,
         )
-        billing_available = active_settings.billing_enabled
         search_artifact_store = app.state.search_artifact_store
         fingerprint = _build_search_fingerprint(payload.company_description)
         artifact = search_artifact_store.create_from_execution(
@@ -563,27 +502,8 @@ def create_app(
             execution=execution,
             now=reference_time,
         )
-        try:
-            access = app.state.billing_client.get_artifact_access(
-                artifact_id=artifact.id,
-                fingerprint=artifact.fingerprint,
-            )
-        except (BillingUnauthorizedError, BillingForbiddenError) as exc:
-            raise http_exception_for_billing_error(exc) from exc
-        except (BillingServiceUnavailableError, BillingServiceError) as exc:
-            capture_backend_exception(
-                exc,
-                component="billing",
-                operation="get_artifact_access",
-                request_id=request_id,
-                fallback_used=True,
-                context={"artifact_id": artifact.id},
-            )
-            billing_available = False
-            access = ArtifactAccessPayload(has_access=False, status="billing_unavailable")
         response = build_preview_match_response(
             artifact=artifact,
-            access=access,
             request_id=request_id,
             base_response=execution.match_response.model_copy(
                 update={
@@ -593,216 +513,11 @@ def create_app(
                 }
             ),
         )
-        return response.model_copy(update={"billing_available": billing_available})
-
-    @app.post("/api/billing/guest-checkout", response_model=GuestCheckoutResponse)
-    def guest_checkout(
-        payload: GuestCheckoutRequest,
-        request: Request,
-        x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
-    ) -> GuestCheckoutResponse:
-        request_id = resolve_request_id(x_request_id)
-        account_context = resolve_account_context(request)
-        bind_request_context(
-            operation="guest_checkout",
-            request_id=request_id,
-            model=active_settings.openai_match_model if active_settings.openai_api_key else None,
-        )
-        try:
-            email, fingerprint = _identity_for_request(
-                account_context,
-                email=payload.email,
-                fingerprint=payload.fingerprint,
-            )
-            session = app.state.billing_client.create_guest_unlock_checkout(
-                artifact_id=payload.artifact_id,
-                fingerprint=fingerprint,
-                email=email,
-                account_context=account_context,
-            )
-        except (BillingUnauthorizedError, BillingForbiddenError) as exc:
-            raise http_exception_for_billing_error(exc) from exc
-        except BillingServiceError as exc:
-            capture_backend_exception(
-                exc,
-                component="billing",
-                operation="create_guest_unlock_checkout",
-                request_id=request_id,
-                fallback_used=True,
-                context={"artifact_id": payload.artifact_id},
-            )
-            raise HTTPException(status_code=503, detail={"code": "BILLING_UNAVAILABLE"}) from exc
-        return GuestCheckoutResponse(checkout_url=session.checkout_url)
-
-    @app.post("/api/billing/subscription-checkout", response_model=SubscriptionCheckoutResponse)
-    def subscription_checkout(
-        payload: SubscriptionCheckoutRequest,
-        request: Request,
-        x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
-    ) -> SubscriptionCheckoutResponse:
-        request_id = resolve_request_id(x_request_id)
-        account_context = resolve_account_context(request)
-        bind_request_context(
-            operation="subscription_checkout",
-            request_id=request_id,
-            model=active_settings.openai_match_model if active_settings.openai_api_key else None,
-        )
-        try:
-            email, fingerprint = _identity_for_request(account_context, email=payload.email)
-            session = app.state.billing_client.create_subscription_checkout(
-                email=email,
-                success_url=payload.success_url,
-                cancel_url=payload.cancel_url,
-                account_context=account_context,
-            )
-        except (BillingUnauthorizedError, BillingForbiddenError) as exc:
-            raise http_exception_for_billing_error(exc) from exc
-        except BillingServiceError as exc:
-            capture_backend_exception(
-                exc,
-                component="billing",
-                operation="create_subscription_checkout",
-                request_id=request_id,
-                fallback_used=True,
-                context={"email": payload.email},
-            )
-            raise HTTPException(status_code=503, detail={"code": "BILLING_UNAVAILABLE"}) from exc
-        return SubscriptionCheckoutResponse(checkout_url=session.checkout_url)
-
-    @app.get("/api/search-artifacts/{artifact_id}/access", response_model=ArtifactAccessResponse)
-    def search_artifact_access(
-        artifact_id: str,
-        request: Request,
-        email: str | None = None,
-        fingerprint: str | None = None,
-        x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
-    ) -> ArtifactAccessResponse:
-        request_id = resolve_request_id(x_request_id)
-        account_context = resolve_account_context(request)
-        bind_request_context(
-            operation="artifact_access",
-            request_id=request_id,
-            model=active_settings.openai_match_model if active_settings.openai_api_key else None,
-        )
-        try:
-            email, fingerprint = _identity_for_request(
-                account_context,
-                email=email,
-                fingerprint=fingerprint,
-            )
-            access = app.state.billing_client.get_artifact_access(
-                artifact_id=artifact_id,
-                email=email,
-                fingerprint=fingerprint,
-                account_context=account_context,
-            )
-        except (BillingUnauthorizedError, BillingForbiddenError) as exc:
-            raise http_exception_for_billing_error(exc) from exc
-        except BillingServiceError as exc:
-            capture_backend_exception(
-                exc,
-                component="billing",
-                operation="get_artifact_access",
-                request_id=request_id,
-                fallback_used=True,
-                context={"artifact_id": artifact_id},
-            )
-            raise HTTPException(status_code=503, detail={"code": "BILLING_UNAVAILABLE"}) from exc
-        return _artifact_access_response(artifact_id, access)
-
-    @app.post("/api/search-artifacts/{artifact_id}/unlock-with-credit", response_model=CreditUnlockResponse)
-    def search_artifact_unlock_with_credit(
-        artifact_id: str,
-        payload: CreditUnlockRequest,
-        request: Request,
-        x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
-    ) -> CreditUnlockResponse:
-        request_id = resolve_request_id(x_request_id)
-        account_context = resolve_account_context(request)
-        bind_request_context(
-            operation="artifact_credit_unlock",
-            request_id=request_id,
-            model=active_settings.openai_match_model if active_settings.openai_api_key else None,
-        )
-        try:
-            email, fingerprint = _identity_for_request(
-                account_context,
-                email=payload.email,
-                fingerprint=payload.fingerprint,
-            )
-            consumed = app.state.billing_client.consume_credit_unlock(
-                artifact_id=artifact_id,
-                email=email,
-                fingerprint=fingerprint,
-                account_context=account_context,
-            )
-            access = app.state.billing_client.get_artifact_access(
-                artifact_id=artifact_id,
-                email=email,
-                fingerprint=fingerprint,
-                account_context=account_context,
-            )
-        except (BillingUnauthorizedError, BillingForbiddenError) as exc:
-            raise http_exception_for_billing_error(exc) from exc
-        except BillingServiceError as exc:
-            capture_backend_exception(
-                exc,
-                component="billing",
-                operation="consume_credit_unlock",
-                request_id=request_id,
-                fallback_used=True,
-                context={"artifact_id": artifact_id},
-            )
-            raise HTTPException(status_code=503, detail={"code": "BILLING_UNAVAILABLE"}) from exc
-        return CreditUnlockResponse(
-            artifact_id=artifact_id,
-            consumed=consumed.consumed,
-            has_access=getattr(access, "has_access", False),
-            status=getattr(access, "status", "preview"),
-            expires_at=getattr(access, "expires_at", None),
-            access_state=_access_state_for_response(access),
-        )
-
-    @app.get("/api/account/dashboard", response_model=AccountDashboardResponse)
-    def account_dashboard(
-        email: str,
-        request: Request,
-        x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
-    ) -> AccountDashboardResponse:
-        request_id = resolve_request_id(x_request_id)
-        account_context = resolve_account_context(request)
-        bind_request_context(
-            operation="account_dashboard",
-            request_id=request_id,
-            model=active_settings.openai_match_model if active_settings.openai_api_key else None,
-        )
-        try:
-            email_hint, _ = _identity_for_request(account_context, email=email)
-            dashboard = app.state.billing_client.get_account_dashboard(
-                email=email_hint,
-                account_context=account_context,
-            )
-        except (BillingUnauthorizedError, BillingForbiddenError) as exc:
-            raise http_exception_for_billing_error(exc) from exc
-        except BillingServiceError as exc:
-            capture_backend_exception(
-                exc,
-                component="billing",
-                operation="get_account_dashboard",
-                request_id=request_id,
-                fallback_used=True,
-                context={"email": email},
-            )
-            raise HTTPException(status_code=503, detail={"code": "BILLING_UNAVAILABLE"}) from exc
-        return AccountDashboardResponse(
-            credits_remaining=dashboard.credits_remaining,
-            dashboard_url=dashboard.dashboard_url,
-        )
+        return response
 
     @app.post("/api/application-brief", response_model=ApplicationBriefResponse)
     def application_brief(
         payload: ApplicationBriefRequest,
-        request: Request,
         x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
     ) -> ApplicationBriefResponse:
         started_at = time.perf_counter()
@@ -818,31 +533,14 @@ def create_app(
                 status_code=503,
                 detail=build_application_brief_error("application brief service unavailable", request_id),
             )
-        account_context = resolve_account_context(request)
-        require_artifact_access(
-            billing_client=app.state.billing_client,
-            artifact_id=payload.artifact_id,
-            account_context=account_context,
-            on_billing_error=lambda exc: capture_backend_exception(
-                exc,
-                component="billing",
-                operation="get_artifact_access",
-                request_id=request_id,
-                fallback_used=True,
-                context={"artifact_id": payload.artifact_id},
-            ),
-        )
         try:
             response = brief_service.generate(
-                artifact_id=payload.artifact_id,
                 company_description=payload.company_description,
                 match_result=payload.match_result.model_dump(),
                 grant_detail=payload.grant_detail.model_dump(),
             )
             sentry_sdk.set_measurement("application_brief_failed", 0.0)
             return response.model_copy(update={"request_id": request_id})
-        except (BillingUnauthorizedError, BillingForbiddenError) as exc:
-            raise http_exception_for_billing_error(exc) from exc
         except Exception as exc:
             sentry_sdk.set_measurement("application_brief_failed", 1.0)
             capture_backend_exception(

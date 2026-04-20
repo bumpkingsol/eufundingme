@@ -39,10 +39,6 @@ export SENTRY_ENVIRONMENT=development
 # Optional. If omitted, the app falls back to a CI commit SHA or local git HEAD.
 export SENTRY_RELEASE=...
 export SENTRY_SEND_DEFAULT_PII=false
-export BILLING_SERVICE_BASE_URL=...
-export BILLING_SERVICE_SHARED_TOKEN=...
-export BILLING_TIMEOUT_SECONDS=5
-# Omit either billing setting to keep the repo in preview-only mode.
 ```
 
 Optional overrides:
@@ -64,23 +60,13 @@ export INDEX_REFRESH_STALL_SECONDS=60
 export DEMO_PROFILES_PATH=...
 ```
 
-## Billing
+## Open-source boundary
 
-This repository is preview-first by design: the public app always serves the free preview experience, and paid unlocks are only enabled when both private billing settings are configured.
+This repository is intentionally preview-first.
 
-Required private billing env vars:
-
-- `BILLING_SERVICE_BASE_URL`
-- `BILLING_SERVICE_SHARED_TOKEN`
-- `BILLING_TIMEOUT_SECONDS`
-
-If either the billing service URL or shared token is missing, the app stays in preview-only mode.
-
-If the billing service is not configured or is temporarily unavailable, `/api/match` still returns the preview payload, marks `billing_available=false`, and the frontend keeps preview results visible while disabling unlock actions.
-
-The real Stripe infrastructure, customer state, webhook handling, and pricing logic intentionally live outside this open-source repo.
-
-See `docs/superpowers/specs/private-billing-service-contract.md` for the private-service boundary this public app expects.
+- The public app computes and shows the top visible result plus locked teaser cards.
+- The hosted product at [fundingme.eu](https://fundingme.eu) handles the private paid workflow.
+- Auth, billing, Stripe webhooks, customer state, and entitlement logic are intentionally kept out of this open-source repo.
 
 ## Use It
 
@@ -241,7 +227,6 @@ Successful `POST /api/match` responses include a top-level `request_id` alongsid
 - If `OPENAI_API_KEY` is not set, the app stays available in lexical-only mode and reports degraded matching quality. In that mode the UI calls out that scores are keyword-based and lower confidence.
 - If embeddings or AI scoring fail at runtime, the app falls back to lexical ranking and marks the match/index state as degraded.
 - If `SENTRY_DSN` is not set, the app still runs but no Sentry monitoring is emitted.
-- If billing is unavailable because the private billing service is down, the app stays in preview-only mode and continues to show the visible match result plus locked teasers.
 
 ## Demo Flow
 

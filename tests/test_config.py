@@ -31,17 +31,6 @@ def test_load_settings_reads_agent_config_from_env(monkeypatch):
     assert settings.sentry_debug_endpoint_enabled is True
 
 
-def test_load_settings_includes_private_billing_service_values(monkeypatch):
-    monkeypatch.setenv("BILLING_SERVICE_BASE_URL", "https://billing.internal")
-    monkeypatch.setenv("BILLING_SERVICE_SHARED_TOKEN", "secret-token")
-
-    settings = load_settings()
-
-    assert settings.billing_service_base_url == "https://billing.internal"
-    assert settings.billing_service_shared_token == "secret-token"
-    assert settings.billing_enabled is True
-
-
 def test_load_settings_uses_eui_match_timeout_alias(monkeypatch):
     monkeypatch.setenv("EUI_MATCH_TIMEOUT_SECONDS", "45")
     monkeypatch.delenv("CLI_MATCH_TIMEOUT_SECONDS", raising=False)
@@ -62,9 +51,6 @@ def test_load_settings_uses_hardened_defaults(monkeypatch):
         "SENTRY_ENVIRONMENT",
         "SENTRY_RELEASE",
         "SENTRY_SEND_DEFAULT_PII",
-        "BILLING_SERVICE_BASE_URL",
-        "BILLING_SERVICE_SHARED_TOKEN",
-        "BILLING_TIMEOUT_SECONDS",
     ]:
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr("backend.config._discover_git_commit_sha", lambda: None)
@@ -82,10 +68,6 @@ def test_load_settings_uses_hardened_defaults(monkeypatch):
     assert settings.sentry_send_default_pii is False
     assert settings.sentry_enable_in_tests is False
     assert settings.sentry_debug_endpoint_enabled is False
-    assert settings.billing_enabled is False
-    assert settings.billing_service_base_url is None
-    assert settings.billing_service_shared_token is None
-    assert settings.billing_timeout_seconds == 5.0
 
 
 def test_load_settings_reads_seed_snapshot_override(monkeypatch):
