@@ -1401,6 +1401,59 @@ if (!resultsList.innerHTML.includes("Unlock full results")) throw new Error("Mis
     assert result.returncode == 0, result.stderr
 
 
+def test_frontend_preview_render_shows_unlocks_are_temporarily_unavailable_message():
+    script = build_frontend_harness(
+        """
+function makeResult(topicId) {
+  return {
+    grant_id: topicId,
+    title: `Grant ${topicId}`,
+    status: "Open",
+    deadline: "2026-08-01",
+    days_left: 20,
+    budget: "EUR 5M",
+    portal_url: `https://example.com/${topicId}`,
+    fit_score: 90,
+    why_match: `Why ${topicId}`,
+    application_angle: `Angle ${topicId}`,
+    framework_programme: "Horizon Europe",
+    programme_division: "Cluster 4",
+    keywords: ["ai"],
+  };
+}
+
+function makeTeaser(topicId) {
+  return {
+    grant_id: topicId,
+    title: `Grant ${topicId}`,
+    fit_score_band: "High fit",
+    deadline: "2026-09-01",
+    budget: "EUR 2M",
+  };
+}
+
+appContext.renderMatchExperience({
+  preview_result: makeResult("TOPIC-1"),
+  locked_result_teasers: [makeTeaser("TOPIC-2")],
+  locked_result_count: 1,
+  access_state: "preview",
+  billing_available: false,
+});
+
+if (!resultsList.innerHTML.includes("Unlocks are temporarily unavailable")) {
+  throw new Error("Missing temporary outage message");
+}
+if (!guestCheckoutButton.disabled || !subscriptionCheckoutButton.disabled) {
+  throw new Error("Expected unlock actions to be disabled during billing outage");
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_frontend_locked_teaser_cards_keep_hidden_copy_locked():
     script = build_frontend_harness(
         """

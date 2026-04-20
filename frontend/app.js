@@ -5,6 +5,8 @@ const MIN_DESCRIPTION_LENGTH = 20;
 const PROFILE_RESOLVE_DEBOUNCE_MS = 450;
 const MAX_COMPARISON_GRANTS = 3;
 const CHECKOUT_CONTEXT_STORAGE_KEY = "eufundingme.checkoutContext";
+const BILLING_OUTAGE_MESSAGE =
+  "Unlocks are temporarily unavailable. Preview stays available while billing recovers.";
 
 const form = document.querySelector("#match-form");
 const descriptionInput = document.querySelector("#company-description");
@@ -347,6 +349,7 @@ function buildCheckoutContextSnapshot(overrides = {}) {
     locked_result_teasers: overrides.locked_result_teasers ?? baseMeta.locked_result_teasers ?? [],
     locked_result_count: overrides.locked_result_count ?? baseMeta.locked_result_count ?? 0,
     artifact_unlocked: overrides.artifact_unlocked ?? baseMeta.artifact_unlocked ?? false,
+    billing_available: overrides.billing_available ?? baseMeta.billing_available ?? true,
     checkout_pending: overrides.checkout_pending ?? false,
   };
 }
@@ -410,16 +413,20 @@ function redirectToUrl(url) {
   }
 }
 
-function applyBillingActionAvailability(accessState = latestMatchMeta?.access_state || "preview") {
+function applyBillingActionAvailability(
+  accessState = latestMatchMeta?.access_state || "preview",
+  billingAvailable = latestMatchMeta?.billing_available !== false,
+) {
   const isPendingUnlock = accessState === "pending_unlock";
+  const isBillingUnavailable = billingAvailable === false;
   if (guestCheckoutButton) {
-    guestCheckoutButton.disabled = isPendingUnlock;
+    guestCheckoutButton.disabled = isPendingUnlock || isBillingUnavailable;
   }
   if (subscriptionCheckoutButton) {
-    subscriptionCheckoutButton.disabled = isPendingUnlock;
+    subscriptionCheckoutButton.disabled = isPendingUnlock || isBillingUnavailable;
   }
   if (creditUnlockButton) {
-    creditUnlockButton.disabled = isPendingUnlock;
+    creditUnlockButton.disabled = isPendingUnlock || isBillingUnavailable;
   }
   if (refreshAccessButton) {
     refreshAccessButton.disabled = false;
@@ -825,7 +832,7 @@ function buildResultCard(result, index, { preview = false, artifactUnlocked = tr
   `;
 }
 
-function buildLockedTeaserCard(teaser, index) {
+function buildLockedTeaserCard(teaser, index, { billingAvailable = true } = {}) {
   const teaserMeta = [
     teaser.fit_score_band && `<span class="meta-pill">${escapeHtml(teaser.fit_score_band)}</span>`,
     teaser.deadline && `<span class="meta-pill">Deadline ${escapeHtml(teaser.deadline)}</span>`,
@@ -852,15 +859,20 @@ function buildLockedTeaserCard(teaser, index) {
         </div>
       </div>
       <div class="meta-row result-actions">
-        <button class="secondary-button" type="button" onclick="launchGuestCheckout()">Unlock full results</button>
+        <button class="secondary-button" type="button" onclick="launchGuestCheckout()" ${
+          billingAvailable ? "" : "disabled aria-disabled=\"true\""
+        }>Unlock full results</button>
       </div>
     </article>
   `;
 }
 
-function buildPreviewPaywallCard(payload) {
+function buildPreviewPaywallCard(payload, { billingAvailable = true } = {}) {
   const lockedCount = Number(payload?.locked_result_count || payload?.locked_result_teasers?.length || 0);
   const noun = lockedCount === 1 ? "match" : "matches";
+  const outageCopy = billingAvailable
+    ? ""
+    : `<p class="results-empty-copy results-empty-copy--warning">${escapeHtml(BILLING_OUTAGE_MESSAGE)}</p>`;
   return `
     <article class="result-card result-card--paywall">
       <div class="result-copy">
@@ -868,10 +880,13 @@ function buildPreviewPaywallCard(payload) {
         <p class="results-empty-copy">
           This preview shows the strongest visible result. Unlock the rest of the search to reveal the remaining shortlist and export the application brief.
         </p>
+        ${outageCopy}
       </div>
       <div class="meta-row result-actions">
-        <button type="button" onclick="launchGuestCheckout()">Unlock full results</button>
-        <button type="button" class="secondary-button" onclick="launchSubscriptionCheckout()">Subscribe for credits</button>
+        <button type="button" onclick="launchGuestCheckout()" ${billingAvailable ? "" : "disabled aria-disabled=\"true\""}>Unlock full results</button>
+        <button type="button" class="secondary-button" onclick="launchSubscriptionCheckout()" ${
+          billingAvailable ? "" : "disabled aria-disabled=\"true\""
+        }>Subscribe for credits</button>
       </div>
     </article>
   `;
@@ -1022,6 +1037,7 @@ function renderPreviewResult(payload) {
 function renderLockedTeasers(payload) {
   const lockedTeasers = payload?.locked_result_teasers || [];
   const lockedCount = Number(payload?.locked_result_count || lockedTeasers.length || 0);
+  const billingAvailable = payload?.billing_available !== false;
   const summaryCopy =
     lockedCount > 0
       ? `${lockedCount} more ${lockedCount === 1 ? "match is" : "matches are"} ready to unlock.`
@@ -1035,8 +1051,10 @@ function renderLockedTeasers(payload) {
     unlockCtaArea.hidden = false;
   }
 
-  const teaserMarkup = lockedTeasers.map((teaser, index) => buildLockedTeaserCard(teaser, index)).join("");
-  resultsList.innerHTML += buildPreviewPaywallCard(payload) + teaserMarkup;
+  const teaserMarkup = lockedTeasers
+    .map((teaser, index) => buildLockedTeaserCard(teaser, index, { billingAvailable }))
+    .join("");
+  resultsList.innerHTML += buildPreviewPaywallCard(payload, { billingAvailable }) + teaserMarkup;
 }
 
 function renderUnlockedResults(payload) {
@@ -1051,6 +1069,7 @@ function renderUnlockedResults(payload) {
 
 function renderBillingActions(payload) {
   const accessState = payload?.access_state || "preview";
+  const billingAvailable = payload?.billing_available !== false;
   if (accessState === "unlocked") {
     hideBillingPanel();
     return;
@@ -1065,22 +1084,30 @@ function renderBillingActions(payload) {
   }
   if (accessState === "pending_unlock") {
     setPendingUnlockMessage("Payment is processing. Refresh unlock status in a moment.");
+    setBillingMessage("");
   } else if (accessState === "expired") {
     setPendingUnlockMessage("This unlock expired. Run the search again or unlock this artifact again.");
+    setBillingMessage("");
+  } else if (!billingAvailable) {
+    setPendingUnlockMessage(BILLING_OUTAGE_MESSAGE);
+    setBillingMessage(BILLING_OUTAGE_MESSAGE, "error");
   } else {
     setPendingUnlockMessage("");
+    setBillingMessage("");
   }
-  applyBillingActionAvailability(accessState);
+  applyBillingActionAvailability(accessState, billingAvailable);
 }
 
 function renderMatchExperience(payload) {
   latestMatchMeta = {
     ...(payload || {}),
     artifact_unlocked: payload?.artifact_unlocked ?? payload?.access_state === "unlocked",
+    billing_available: payload?.billing_available ?? true,
   };
   if (latestMatchMeta?.artifact_id) {
     persistCheckoutContext({
       checkout_pending: Boolean(latestMatchMeta?.checkout_pending || latestMatchMeta?.access_state === "pending_unlock"),
+      billing_available: latestMatchMeta.billing_available,
     });
   }
   setResultsBusy(false);
@@ -1660,6 +1687,10 @@ async function refreshArtifactAccess({ scheduleNextPoll = false } = {}) {
 }
 
 async function launchGuestCheckout() {
+  if (latestMatchMeta?.billing_available === false) {
+    setBillingMessage(BILLING_OUTAGE_MESSAGE, "error");
+    return;
+  }
   const artifactId = latestMatchMeta?.artifact_id;
   if (!artifactId) {
     setBillingMessage("Run a search before starting checkout.", "error");
@@ -1710,6 +1741,10 @@ async function launchGuestCheckout() {
 }
 
 async function launchSubscriptionCheckout() {
+  if (latestMatchMeta?.billing_available === false) {
+    setBillingMessage(BILLING_OUTAGE_MESSAGE, "error");
+    return;
+  }
   const email = getBillingEmailValue();
   if (!email) {
     setBillingMessage("Add an email address before starting subscription checkout.", "error");
@@ -1750,6 +1785,10 @@ async function launchSubscriptionCheckout() {
 }
 
 async function unlockWithSubscriberCredit() {
+  if (latestMatchMeta?.billing_available === false) {
+    setBillingMessage(BILLING_OUTAGE_MESSAGE, "error");
+    return;
+  }
   const artifactId = latestMatchMeta?.artifact_id;
   if (!artifactId) {
     setBillingMessage("Run a search before using a subscriber credit.", "error");

@@ -21,6 +21,7 @@ from .billing_client import (
     ArtifactAccessPayload,
     BillingForbiddenError,
     BillingServiceError,
+    BillingServiceUnavailableError,
     BillingUnauthorizedError,
     build_billing_client,
 )
@@ -151,6 +152,12 @@ def build_preview_match_response(
             "artifact_id": artifact.id,
         }
     )
+
+
+def _match_response_payload(response: MatchResponse, *, billing_available: bool) -> dict[str, object]:
+    payload = response.model_dump(mode="json")
+    payload["billing_available"] = billing_available
+    return payload
 
 
 def build_match_service(settings: Settings, app_state: AppState) -> MatchService:
@@ -553,6 +560,7 @@ def create_app(
             request_id=request_id,
             now=reference_time,
         )
+        billing_available = active_settings.billing_enabled
         search_artifact_store = app.state.search_artifact_store
         fingerprint = _build_search_fingerprint(payload.company_description)
         artifact = search_artifact_store.create_from_execution(
@@ -566,7 +574,9 @@ def create_app(
                 artifact_id=artifact.id,
                 fingerprint=artifact.fingerprint,
             )
-        except BillingServiceError as exc:
+        except (BillingUnauthorizedError, BillingForbiddenError) as exc:
+            raise http_exception_for_billing_error(exc) from exc
+        except (BillingServiceUnavailableError, BillingServiceError) as exc:
             capture_backend_exception(
                 exc,
                 component="billing",
@@ -575,6 +585,7 @@ def create_app(
                 fallback_used=True,
                 context={"artifact_id": artifact.id},
             )
+            billing_available = False
             access = ArtifactAccessPayload(has_access=False, status="billing_unavailable")
         response = build_preview_match_response(
             artifact=artifact,
@@ -588,7 +599,7 @@ def create_app(
                 }
             ),
         )
-        return response
+        return JSONResponse(content=_match_response_payload(response, billing_available=billing_available))
 
     @app.post("/api/billing/guest-checkout", response_model=GuestCheckoutResponse)
     def guest_checkout(

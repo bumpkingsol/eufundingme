@@ -16,6 +16,9 @@ class BillingServiceUnavailableError(BillingServiceError):
     pass
 
 
+BillingServiceUnavailable = BillingServiceUnavailableError
+
+
 class BillingUnauthorizedError(BillingServiceError):
     pass
 

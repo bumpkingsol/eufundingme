@@ -616,6 +616,95 @@ def test_match_endpoint_fails_open_when_billing_access_lookup_errors():
     assert payload["locked_result_count"] == 1
 
 
+def test_match_still_returns_preview_when_billing_service_is_down():
+    class FakeState:
+        def ensure_indexing_started(self) -> None:
+            return None
+
+        def get_status(self) -> IndexStatus:
+            return IndexStatus(
+                phase="ready",
+                message="Ready",
+                indexed_grants=2,
+                scanned_prefixes=1,
+                total_prefixes=1,
+                failed_prefixes=0,
+                truncated_prefixes=0,
+                embeddings_ready=True,
+                degraded=False,
+                coverage_complete=True,
+                matching_available=True,
+                degradation_reasons=[],
+            )
+
+        def get_grants(self) -> list[object]:
+            return ["placeholder"]
+
+    class FakeMatchService:
+        def match(
+            self,
+            company_description: str,
+            grants: list[object],
+            now=None,
+            limit: int = 10,
+            base_degradation_reasons=None,
+        ) -> MatchResponse:
+            return MatchResponse(
+                indexed_grants=2,
+                degraded=False,
+                degradation_reasons=[],
+                results=[
+                    MatchResult(
+                        grant_id="TOPIC-1",
+                        title="AI Safety Grant",
+                        status="Open",
+                        deadline="2026-08-01",
+                        days_left=105,
+                        budget="EUR 6.2M",
+                        portal_url="https://example.com/TOPIC-1",
+                        fit_score=92,
+                        why_match="Strong overlap in AI safety deployment.",
+                        application_angle="Lead with trusted deployment across Europe.",
+                        framework_programme="Horizon Europe",
+                        programme_division="Cluster 4",
+                        keywords=["ai", "safety"],
+                    ),
+                    MatchResult(
+                        grant_id="TOPIC-2",
+                        title="Climate Grant",
+                        status="Open",
+                        deadline="2026-08-15",
+                        days_left=119,
+                        budget="EUR 3.0M",
+                        portal_url="https://example.com/TOPIC-2",
+                        fit_score=84,
+                        why_match="Strong fit on climate tooling.",
+                        application_angle="Lead with measurable emissions impact.",
+                        framework_programme="Horizon Europe",
+                        programme_division="Cluster 5",
+                        keywords=["climate"],
+                    ),
+                ],
+            )
+
+    class DownBillingClient:
+        def get_artifact_access(self, *, artifact_id: str, email: str | None = None, fingerprint: str | None = None, account_context=None):
+            raise BillingServiceError("billing service request failed")
+
+    app = create_app(app_state=FakeState(), match_service=FakeMatchService())
+    app.state.billing_client = DownBillingClient()
+    client = TestClient(app)
+
+    response = client.post("/api/match", json={"company_description": "We build AI tools across Europe."})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["access_state"] == "preview"
+    assert payload["billing_available"] is False
+    assert payload["preview_result"]["grant_id"] == "TOPIC-1"
+    assert len(payload["results"]) == 1
+
+
 def test_match_endpoint_returns_translated_non_english_results():
     class FakeState:
         def ensure_indexing_started(self) -> None:
@@ -1889,7 +1978,7 @@ def test_grant_detail_endpoint_uses_request_scoped_live_grant_fallback_when_upst
         def get_grants(self):
             return []
 
-    app = create_app(app_state=EmptyState())
+    app = create_app(settings=Settings(openai_api_key=None), app_state=EmptyState())
     app.state.grant_detail_service = MissingDetailService()
     app.state.live_grant_cache.store(
         "journey-123",
