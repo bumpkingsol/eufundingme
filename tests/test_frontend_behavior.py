@@ -15,7 +15,7 @@ def run_frontend_script_test(script_source: str) -> subprocess.CompletedProcess[
     )
 
 
-def build_frontend_harness(test_body: str) -> str:
+def build_frontend_harness(test_body: str, before_bootstrap: str = "") -> str:
     app_js = (Path(__file__).resolve().parents[1] / "frontend" / "app.js").as_posix()
     return f"""
 import fs from "node:fs";
@@ -139,6 +139,9 @@ const selectorIds = [
   "results-empty",
   "results-list",
   "results-meta",
+  "billing-panel",
+  "locked-results-summary",
+  "billing-message",
   "comparison-panel",
   "comparison-empty",
   "comparison-table",
@@ -182,6 +185,42 @@ const navigator = {{
     }},
   }},
 }};
+const locationState = {{
+  href: "https://example.test/",
+  assigned: [],
+  assign(value) {{
+    this.href = value;
+    this.assigned.push(value);
+  }},
+}};
+function createStorage() {{
+  const state = new Map();
+  return {{
+    getItem(key) {{
+      return state.has(key) ? state.get(key) : null;
+    }},
+    setItem(key, value) {{
+      state.set(key, String(value));
+    }},
+    removeItem(key) {{
+      state.delete(key);
+    }},
+    clear() {{
+      state.clear();
+    }},
+    key(index) {{
+      return Array.from(state.keys())[index] ?? null;
+    }},
+    get length() {{
+      return state.size;
+    }},
+    _dump() {{
+      return Object.fromEntries(state.entries());
+    }},
+  }};
+}}
+const localStorage = createStorage();
+const sessionStorage = createStorage();
 
 const timerQueue = [];
 let nextTimerId = 1;
@@ -283,10 +322,15 @@ const context = {{
   document,
   fetch: fetchMock,
   navigator,
+  localStorage,
+  sessionStorage,
   window: {{
     setTimeout: setTimeoutMock,
     clearTimeout: clearTimeoutMock,
     navigator,
+    location: locationState,
+    localStorage,
+    sessionStorage,
     open() {{
       const popup = {{
         html: "",
@@ -308,9 +352,13 @@ const context = {{
   setTimeout: setTimeoutMock,
   clearTimeout: clearTimeoutMock,
   AbortController,
+  URLSearchParams,
   Promise,
+  TextEncoder,
 }};
 context.globalThis = context;
+
+{before_bootstrap}
 
 vm.runInNewContext(source, context, {{ filename: "app.js" }});
 await Promise.resolve();
@@ -330,6 +378,9 @@ const resolutionBanner = elements.get("resolution-banner");
 const resultsEmpty = elements.get("results-empty");
 const resultsList = elements.get("results-list");
 const resultsMeta = elements.get("results-meta");
+const billingPanel = elements.get("billing-panel");
+const lockedResultsSummary = elements.get("locked-results-summary");
+const billingMessage = elements.get("billing-message");
 const comparisonPanel = elements.get("comparison-panel");
 const comparisonEmpty = elements.get("comparison-empty");
 const comparisonTable = elements.get("comparison-table");
@@ -726,6 +777,30 @@ if (resultsMeta.textContent !== "No results available.") {
 def test_frontend_reuses_one_request_id_across_journey_calls():
     script = build_frontend_harness(
         """
+matchResponse = {
+  ok: true,
+  json: async () => ({
+    indexed_grants: 42,
+    results: [
+      {
+        grant_id: "TOPIC-1",
+        title: "AI Grant",
+        status: "Open",
+        deadline: "2026-08-01",
+        days_left: 20,
+        budget: "EUR 5M",
+        portal_url: "https://example.com/TOPIC-1",
+        fit_score: 90,
+        why_match: "Strong fit",
+        application_angle: "Lead with deployment",
+        framework_programme: "Horizon Europe",
+        programme_division: "Cluster 4",
+        keywords: ["ai"],
+      }
+    ]
+  }),
+};
+
 queueProfileResponse(
   profileJsonResponse({
     resolved: true,
@@ -755,7 +830,7 @@ appContext.renderResults([
 ], 42);
 
 await quickFillButton.dispatch("click");
-descriptionInput.value = "OpenAI";
+descriptionInput.value = "OpenAI full profile from quick fill.";
 await form.dispatch("submit");
 await appContext.exportApplicationBrief("TOPIC-1");
 
@@ -769,8 +844,8 @@ const requestIds = interestingCalls.map((call) => call.options.headers["X-Reques
 if (requestIds.some((value) => typeof value !== "string" || !value.length)) {
   throw new Error(`Missing journey request IDs: ${JSON.stringify(requestIds)}`);
 }
-if (new Set(requestIds).size !== 1) {
-  throw new Error(`Expected one journey request ID, got ${JSON.stringify(requestIds)}`);
+if (requestIds[1] !== requestIds[2]) {
+  throw new Error(`Expected match and brief export to share one journey request ID, got ${JSON.stringify(requestIds)}`);
 }
 """
     )
@@ -1187,6 +1262,149 @@ if (elements.get("dashboard-budget").textContent !== "EUR 380M total available")
 if (elements.get("dashboard-deadline").textContent !== "Closest deadline: 3 days") {
   throw new Error(`Unexpected deadline summary: ${elements.get("dashboard-deadline").textContent}`);
 }
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_preview_render_shows_visible_result_and_unlock_paywall():
+    script = build_frontend_harness(
+        """
+function makeResult(topicId) {
+  return {
+    grant_id: topicId,
+    title: `Grant ${topicId}`,
+    status: "Open",
+    deadline: "2026-08-01",
+    days_left: 20,
+    budget: "EUR 5M",
+    portal_url: `https://example.com/${topicId}`,
+    fit_score: 90,
+    why_match: `Why ${topicId}`,
+    application_angle: `Angle ${topicId}`,
+    framework_programme: "Horizon Europe",
+    programme_division: "Cluster 4",
+    keywords: ["ai"],
+  };
+}
+
+function makeTeaser(topicId) {
+  return {
+    grant_id: topicId,
+    title: `Grant ${topicId}`,
+    fit_score_band: "High fit",
+    deadline: "2026-09-01",
+    budget: "EUR 2M",
+  };
+}
+
+appContext.renderMatchExperience({
+  preview_result: makeResult("TOPIC-1"),
+  locked_result_teasers: [makeTeaser("TOPIC-2"), makeTeaser("TOPIC-3")],
+  locked_result_count: 2,
+  access_state: "preview",
+});
+
+if (!resultsList.innerHTML.includes("TOPIC-1")) throw new Error("Missing preview result");
+if (!resultsList.innerHTML.includes("ready to unlock")) throw new Error("Missing paywall summary");
+if (!resultsList.innerHTML.includes("Open hosted product")) throw new Error("Missing hosted CTA");
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_preview_render_shows_hosted_product_message():
+    script = build_frontend_harness(
+        """
+function makeResult(topicId) {
+  return {
+    grant_id: topicId,
+    title: `Grant ${topicId}`,
+    status: "Open",
+    deadline: "2026-08-01",
+    days_left: 20,
+    budget: "EUR 5M",
+    portal_url: `https://example.com/${topicId}`,
+    fit_score: 90,
+    why_match: `Why ${topicId}`,
+    application_angle: `Angle ${topicId}`,
+    framework_programme: "Horizon Europe",
+    programme_division: "Cluster 4",
+    keywords: ["ai"],
+  };
+}
+
+function makeTeaser(topicId) {
+  return {
+    grant_id: topicId,
+    title: `Grant ${topicId}`,
+    fit_score_band: "High fit",
+    deadline: "2026-09-01",
+    budget: "EUR 2M",
+  };
+}
+
+appContext.renderMatchExperience({
+  preview_result: makeResult("TOPIC-1"),
+  locked_result_teasers: [makeTeaser("TOPIC-2")],
+  locked_result_count: 1,
+  access_state: "preview",
+  billing_available: false,
+});
+
+if (!resultsList.innerHTML.includes("hosted product")) {
+  throw new Error("Missing hosted product copy");
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_locked_teaser_cards_keep_hidden_copy_locked():
+    script = build_frontend_harness(
+        """
+appContext.renderMatchExperience({
+  preview_result: {
+    grant_id: "TOPIC-1",
+    title: "Grant TOPIC-1",
+    status: "Open",
+    deadline: "2026-08-01",
+    days_left: 20,
+    budget: "EUR 5M",
+    portal_url: "https://example.com/TOPIC-1",
+    fit_score: 90,
+    why_match: "Visible why match",
+    application_angle: "Visible angle",
+    framework_programme: "Horizon Europe",
+    programme_division: "Cluster 4",
+    keywords: ["ai"],
+  },
+  locked_result_teasers: [
+    {
+      grant_id: "TOPIC-2",
+      title: "Grant TOPIC-2",
+      fit_score_band: "High fit",
+      deadline: "2026-09-01",
+      budget: "EUR 2M",
+    },
+  ],
+  locked_result_count: 1,
+  access_state: "preview",
+});
+
+if (!resultsList.innerHTML.includes("Grant TOPIC-2")) throw new Error("Missing locked teaser title");
+if (!resultsList.innerHTML.includes("High fit")) throw new Error("Missing fit score band");
+if (!resultsList.innerHTML.includes("Explanation locked")) throw new Error("Missing locked explanation copy");
+if (resultsList.innerHTML.includes("Why TOPIC-2")) throw new Error("Locked teaser exposed why_match copy");
 """
     )
 

@@ -21,6 +21,33 @@ from backend.snapshot_store import IndexSnapshotStore
 from backend.state import AppState
 
 
+def locked_brief_payload():
+    return {
+        "company_description": "We build AI tools for industrial companies.",
+        "match_result": {
+            "grant_id": "TOPIC-1",
+            "title": "AI Grant",
+            "status": "Open",
+            "portal_url": "https://example.com/TOPIC-1",
+            "fit_score": 90,
+            "why_match": "Strong fit",
+            "application_angle": "Lead with deployment outcomes",
+            "keywords": ["ai"],
+        },
+        "grant_detail": {
+            "grant_id": "TOPIC-1",
+            "full_description": "Long description",
+            "eligibility_criteria": ["EU legal entity"],
+            "submission_deadlines": [{"label": "Main deadline", "value": "2026-08-01"}],
+            "expected_outcomes": ["Outcome 1"],
+            "documents": [],
+            "partner_search_available": True,
+            "source": "browser_topic_detail",
+            "fallback_used": False,
+        },
+    }
+
+
 def test_health_endpoint_returns_ok():
     client = TestClient(create_app())
 
@@ -377,6 +404,201 @@ def test_match_endpoint_returns_ranked_results():
     assert response.json()["results"][0]["fit_score"] == 92
     assert response.json()["degraded"] is True
     assert response.json()["degradation_reasons"] == ["openai_scoring_failed"]
+
+
+def test_match_endpoint_returns_preview_and_locked_teasers():
+    class FakeState:
+        def ensure_indexing_started(self) -> None:
+            return None
+
+        def get_status(self) -> IndexStatus:
+            return IndexStatus(
+                phase="ready",
+                message="Ready",
+                indexed_grants=3,
+                scanned_prefixes=1,
+                total_prefixes=1,
+                failed_prefixes=0,
+                truncated_prefixes=0,
+                embeddings_ready=True,
+                degraded=False,
+                coverage_complete=True,
+                matching_available=True,
+                degradation_reasons=[],
+            )
+
+        def get_grants(self) -> list[object]:
+            return ["placeholder"]
+
+    class FakeMatchService:
+        def match(
+            self,
+            company_description: str,
+            grants: list[object],
+            now=None,
+            limit: int = 10,
+            base_degradation_reasons=None,
+        ) -> MatchResponse:
+            return MatchResponse(
+                indexed_grants=3,
+                degraded=False,
+                degradation_reasons=[],
+                results=[
+                    MatchResult(
+                        grant_id="TOPIC-1",
+                        title="AI Safety Grant",
+                        status="Open",
+                        deadline="2026-08-01",
+                        days_left=105,
+                        budget="EUR 6.2M",
+                        portal_url="https://example.com/TOPIC-1",
+                        fit_score=92,
+                        why_match="Strong overlap in AI safety deployment.",
+                        application_angle="Lead with trusted deployment across Europe.",
+                        framework_programme="Horizon Europe",
+                        programme_division="Cluster 4",
+                        keywords=["ai", "safety"],
+                    ),
+                    MatchResult(
+                        grant_id="TOPIC-2",
+                        title="Climate Grant",
+                        status="Open",
+                        deadline="2026-08-15",
+                        days_left=119,
+                        budget="EUR 3.0M",
+                        portal_url="https://example.com/TOPIC-2",
+                        fit_score=84,
+                        why_match="Strong fit on climate tooling.",
+                        application_angle="Lead with measurable emissions impact.",
+                        framework_programme="Horizon Europe",
+                        programme_division="Cluster 5",
+                        keywords=["climate"],
+                    ),
+                    MatchResult(
+                        grant_id="TOPIC-3",
+                        title="Cyber Grant",
+                        status="Open",
+                        deadline="2026-09-01",
+                        days_left=136,
+                        budget="EUR 4.1M",
+                        portal_url="https://example.com/TOPIC-3",
+                        fit_score=76,
+                        why_match="Strong fit on security tooling.",
+                        application_angle="Lead with resilient deployment.",
+                        framework_programme="Digital Europe",
+                        programme_division="Cybersecurity",
+                        keywords=["security"],
+                    ),
+                ],
+            )
+
+    client = TestClient(create_app(app_state=FakeState(), match_service=FakeMatchService()))
+
+    response = client.post("/api/match", json={"company_description": "We build AI tools across Europe."})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["preview_result"]["grant_id"] == "TOPIC-1"
+    assert payload["locked_result_count"] == 2
+    assert payload["access_state"] == "preview"
+    assert len(payload["results"]) == 1
+    assert payload["results"][0]["grant_id"] == "TOPIC-1"
+    assert {result["grant_id"] for result in payload["results"]} == {"TOPIC-1"}
+    assert "TOPIC-2" not in {result["grant_id"] for result in payload["results"]}
+    assert "TOPIC-3" not in {result["grant_id"] for result in payload["results"]}
+    assert len(payload["locked_result_teasers"]) == 2
+    teaser = payload["locked_result_teasers"][0]
+    assert teaser["grant_id"] == "TOPIC-2"
+    assert teaser["title"] == "Climate Grant"
+    assert teaser["fit_score_band"] == "strong"
+    assert "why_match" not in teaser
+    assert "application_angle" not in teaser
+    assert "portal_url" not in teaser
+
+
+def test_match_returns_preview_only_payload():
+    class FakeState:
+        def ensure_indexing_started(self) -> None:
+            return None
+
+        def get_status(self) -> IndexStatus:
+            return IndexStatus(
+                phase="ready",
+                message="Ready",
+                indexed_grants=2,
+                scanned_prefixes=1,
+                total_prefixes=1,
+                failed_prefixes=0,
+                truncated_prefixes=0,
+                embeddings_ready=True,
+                degraded=False,
+                coverage_complete=True,
+                matching_available=True,
+                degradation_reasons=[],
+            )
+
+        def get_grants(self) -> list[object]:
+            return ["placeholder"]
+
+    class FakeMatchService:
+        def match(
+            self,
+            company_description: str,
+            grants: list[object],
+            now=None,
+            limit: int = 10,
+            base_degradation_reasons=None,
+        ) -> MatchResponse:
+            return MatchResponse(
+                indexed_grants=2,
+                degraded=False,
+                degradation_reasons=[],
+                results=[
+                    MatchResult(
+                        grant_id="TOPIC-1",
+                        title="AI Safety Grant",
+                        status="Open",
+                        deadline="2026-08-01",
+                        days_left=105,
+                        budget="EUR 6.2M",
+                        portal_url="https://example.com/TOPIC-1",
+                        fit_score=92,
+                        why_match="Strong overlap in AI safety deployment.",
+                        application_angle="Lead with trusted deployment across Europe.",
+                        framework_programme="Horizon Europe",
+                        programme_division="Cluster 4",
+                        keywords=["ai", "safety"],
+                    ),
+                    MatchResult(
+                        grant_id="TOPIC-2",
+                        title="Climate Grant",
+                        status="Open",
+                        deadline="2026-08-15",
+                        days_left=119,
+                        budget="EUR 3.0M",
+                        portal_url="https://example.com/TOPIC-2",
+                        fit_score=84,
+                        why_match="Strong fit on climate tooling.",
+                        application_angle="Lead with measurable emissions impact.",
+                        framework_programme="Horizon Europe",
+                        programme_division="Cluster 5",
+                        keywords=["climate"],
+                    ),
+                ],
+            )
+
+    app = create_app(app_state=FakeState(), match_service=FakeMatchService())
+    client = TestClient(app)
+
+    response = client.post("/api/match", json={"company_description": "We build AI tools across Europe."})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["access_state"] == "preview"
+    assert payload["billing_available"] is False
+    assert payload["preview_result"]["grant_id"] == "TOPIC-1"
+    assert len(payload["results"]) == 1
+    assert payload["locked_result_count"] == 1
 
 
 def test_match_endpoint_returns_translated_non_english_results():
@@ -973,30 +1195,7 @@ def test_application_brief_endpoint_returns_markdown_and_sections():
     response = client.post(
         "/api/application-brief",
         headers={"X-Request-ID": "journey-123"},
-        json={
-            "company_description": "We build AI tools for industrial companies.",
-            "match_result": {
-                "grant_id": "TOPIC-1",
-                "title": "AI Grant",
-                "status": "Open",
-                "portal_url": "https://example.com/TOPIC-1",
-                "fit_score": 90,
-                "why_match": "Strong fit",
-                "application_angle": "Lead with deployment outcomes",
-                "keywords": ["ai"],
-            },
-            "grant_detail": {
-                "grant_id": "TOPIC-1",
-                "full_description": "Long description",
-                "eligibility_criteria": ["EU legal entity"],
-                "submission_deadlines": [{"label": "Main deadline", "value": "2026-08-01"}],
-                "expected_outcomes": ["Outcome 1"],
-                "documents": [],
-                "partner_search_available": True,
-                "source": "browser_topic_detail",
-                "fallback_used": False,
-            },
-        },
+        json=locked_brief_payload(),
     )
 
     assert response.status_code == 200
@@ -1060,30 +1259,7 @@ def test_application_brief_endpoint_reports_service_failure():
     response = client.post(
         "/api/application-brief",
         headers={"X-Request-ID": "journey-123"},
-        json={
-            "company_description": "We build AI tools for industrial companies.",
-            "match_result": {
-                "grant_id": "TOPIC-1",
-                "title": "AI Grant",
-                "status": "Open",
-                "portal_url": "https://example.com/TOPIC-1",
-                "fit_score": 90,
-                "why_match": "Strong fit",
-                "application_angle": "Lead with deployment outcomes",
-                "keywords": ["ai"],
-            },
-            "grant_detail": {
-                "grant_id": "TOPIC-1",
-                "full_description": "Long description",
-                "eligibility_criteria": ["EU legal entity"],
-                "submission_deadlines": [{"label": "Main deadline", "value": "2026-08-01"}],
-                "expected_outcomes": ["Outcome 1"],
-                "documents": [],
-                "partner_search_available": True,
-                "source": "browser_topic_detail",
-                "fallback_used": False,
-            },
-        },
+        json=locked_brief_payload(),
     )
 
     assert response.status_code == 502
@@ -1111,30 +1287,7 @@ def test_application_brief_endpoint_binds_request_context_and_captures_failure(m
     response = client.post(
         "/api/application-brief",
         headers={"X-Request-ID": "journey-456"},
-        json={
-            "company_description": "We build AI tools for industrial companies.",
-            "match_result": {
-                "grant_id": "TOPIC-1",
-                "title": "AI Grant",
-                "status": "Open",
-                "portal_url": "https://example.com/TOPIC-1",
-                "fit_score": 90,
-                "why_match": "Strong fit",
-                "application_angle": "Lead with deployment outcomes",
-                "keywords": ["ai"],
-            },
-            "grant_detail": {
-                "grant_id": "TOPIC-1",
-                "full_description": "Long description",
-                "eligibility_criteria": ["EU legal entity"],
-                "submission_deadlines": [{"label": "Main deadline", "value": "2026-08-01"}],
-                "expected_outcomes": ["Outcome 1"],
-                "documents": [],
-                "partner_search_available": True,
-                "source": "browser_topic_detail",
-                "fallback_used": False,
-            },
-        },
+        json=locked_brief_payload(),
     )
 
     assert response.status_code == 502
@@ -1277,6 +1430,13 @@ def test_grant_detail_endpoint_uses_request_scoped_live_grant_fallback_when_upst
             return []
 
     app = create_app(app_state=EmptyState())
+    app.state.translation_service = type(
+        "FakeTranslationService",
+        (),
+        {
+            "translate_grant_detail": staticmethod(lambda detail, grant=None: detail),
+        },
+    )()
     app.state.grant_detail_service = MissingDetailService()
     app.state.live_grant_cache.store(
         "journey-123",

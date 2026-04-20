@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 import time
@@ -34,6 +35,7 @@ from .models import (
 )
 from .observability import bind_request_context, capture_backend_exception, initialize_sentry
 from .openai_client import build_openai_client
+from .search_artifacts import SearchArtifact, SearchArtifactStore, build_locked_result_teaser
 from .profile_resolver import DemoProfileResolver, OpenAICompanyProfileExpander
 from .request_ids import resolve_request_id
 from .translation import GrantTranslationService, OpenAIGrantTranslator
@@ -48,6 +50,11 @@ FAVICON_SVG = (
     "</svg>"
 )
 MATCH_NOT_READY_ERROR_CODE = "INDEX_NOT_READY"
+
+
+def _build_search_fingerprint(company_description: str) -> str:
+    normalized = " ".join(company_description.split()).casefold()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def build_match_unavailable_error(status: IndexStatus, request_id: str | None = None) -> dict:
@@ -67,6 +74,25 @@ def build_application_brief_error(message: str, request_id: str | None = None) -
     if request_id is not None:
         payload["request_id"] = request_id
     return payload
+
+
+def build_preview_match_response(
+    *,
+    artifact: SearchArtifact,
+    request_id: str | None,
+    base_response: MatchResponse,
+) -> MatchResponse:
+    return base_response.model_copy(
+        update={
+            "request_id": request_id,
+            "results": [artifact.preview_result] if artifact.preview_result else [],
+            "preview_result": artifact.preview_result,
+            "locked_result_teasers": [build_locked_result_teaser(result) for result in artifact.locked_results],
+            "locked_result_count": artifact.locked_result_count,
+            "artifact_id": artifact.id,
+            "billing_available": False,
+        }
+    )
 
 
 def build_match_service(settings: Settings, app_state: AppState) -> MatchService:
@@ -210,6 +236,7 @@ def create_app(
     app = FastAPI(title="EU Grant Matcher", lifespan=lifespan)
     app.state.settings = active_settings
     app.state.app_state = app_state
+    app.state.search_artifact_store = getattr(app_state, "search_artifact_store", SearchArtifactStore())
     app.state.match_service = match_service or build_match_service(active_settings, app_state)
     openai_client = build_openai_client(active_settings)
     app.state.translation_service = translation_service or GrantTranslationService(
@@ -467,14 +494,26 @@ def create_app(
             request_id=request_id,
             now=reference_time,
         )
-        return execution.match_response.model_copy(
-            update={
-                "request_id": request_id,
-                "indexed_grants": len(execution.all_grants),
-                "refresh_indexed_grants": len(execution.all_grants),
-                "result_source": execution.result_source,
-            }
+        search_artifact_store = app.state.search_artifact_store
+        fingerprint = _build_search_fingerprint(payload.company_description)
+        artifact = search_artifact_store.create_from_execution(
+            fingerprint=fingerprint,
+            company_description=payload.company_description,
+            execution=execution,
+            now=reference_time,
         )
+        response = build_preview_match_response(
+            artifact=artifact,
+            request_id=request_id,
+            base_response=execution.match_response.model_copy(
+                update={
+                    "indexed_grants": len(execution.all_grants),
+                    "refresh_indexed_grants": len(execution.all_grants),
+                    "result_source": execution.result_source,
+                }
+            ),
+        )
+        return response
 
     @app.post("/api/application-brief", response_model=ApplicationBriefResponse)
     def application_brief(

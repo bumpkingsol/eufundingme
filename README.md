@@ -60,6 +60,14 @@ export INDEX_REFRESH_STALL_SECONDS=60
 export DEMO_PROFILES_PATH=...
 ```
 
+## Open-source boundary
+
+This repository is intentionally preview-first.
+
+- The public app computes and shows the top visible result plus locked teaser cards.
+- The hosted product at [fundingme.eu](https://fundingme.eu) handles the private paid workflow.
+- Auth, billing, Stripe webhooks, customer state, and entitlement logic are intentionally kept out of this open-source repo.
+
 ## Use It
 
 The hosted version is live at **[fundingme.eu](https://fundingme.eu)**. No setup needed.

@@ -4,6 +4,8 @@ const DEFAULT_EMPTY_STATE =
 const MIN_DESCRIPTION_LENGTH = 20;
 const PROFILE_RESOLVE_DEBOUNCE_MS = 450;
 const MAX_COMPARISON_GRANTS = 3;
+const BILLING_OUTAGE_MESSAGE =
+  "The open-source app stops at the free preview. Use the hosted product to unlock the remaining results.";
 
 const form = document.querySelector("#match-form");
 const descriptionInput = document.querySelector("#company-description");
@@ -45,6 +47,9 @@ const comparisonTable = document.querySelector("#comparison-table");
 const alertForm = document.querySelector("#alert-form");
 const alertEmail = document.querySelector("#alert-email");
 const alertStatus = document.querySelector("#alert-status");
+const billingPanel = document.querySelector("#billing-panel");
+const lockedResultsSummary = document.querySelector("#locked-results-summary");
+const billingMessage = document.querySelector("#billing-message");
 
 let latestStatus = null;
 let latestResults = [];
@@ -224,6 +229,34 @@ function setResultsBusy(isBusy) {
   }
 }
 
+function setBillingMessage(message = "", tone = "info") {
+  if (!billingMessage) {
+    return;
+  }
+  if (!message) {
+    billingMessage.hidden = true;
+    billingMessage.textContent = "";
+    billingMessage.classList.remove("is-error");
+    return;
+  }
+  billingMessage.hidden = false;
+  billingMessage.textContent = message;
+  billingMessage.classList.toggle("is-error", tone === "error");
+}
+
+function hideBillingPanel() {
+  if (billingPanel) {
+    billingPanel.hidden = true;
+  }
+  setBillingMessage("");
+}
+
+function showBillingPanel() {
+  if (billingPanel) {
+    billingPanel.hidden = false;
+  }
+}
+
 function buildEmptyStateMarkup({ variant = "intro", title, copy, bullets = [] }) {
   const bulletMarkup = bullets.length
     ? `<ul class="results-empty-list">${bullets.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
@@ -247,6 +280,7 @@ function showResultsEmptyState(config) {
 
 function showIntroResultsState(message = DEFAULT_EMPTY_STATE, meta = "No search run yet.") {
   latestMatchMeta = null;
+  hideBillingPanel();
   updateDocumentTitle();
   setResultsBusy(false);
   showResultsEmptyState({
@@ -262,6 +296,7 @@ function showIntroResultsState(message = DEFAULT_EMPTY_STATE, meta = "No search 
 }
 
 function showLoadingResultsState() {
+  hideBillingPanel();
   setResultsBusy(true);
   showResultsEmptyState({
     variant: "loading",
@@ -277,6 +312,7 @@ function showLoadingResultsState() {
 
 function showMatchFeedback(message) {
   latestMatchMeta = null;
+  hideBillingPanel();
   hideResolutionBanner();
   updateDocumentTitle();
   setResultsBusy(false);
@@ -541,6 +577,135 @@ function renderComparisonPanel() {
   comparisonTable.innerHTML = columns;
 }
 
+function getFitScoreBand(fitScore) {
+  if (fitScore >= 70) {
+    return "High fit";
+  }
+  if (fitScore >= 40) {
+    return "Medium fit";
+  }
+  return "Early fit";
+}
+
+function buildResultCard(result, index, { preview = false, artifactUnlocked = true } = {}) {
+  const keywords = (result.keywords || [])
+    .map((keyword) => `<span class="keyword-pill">${escapeHtml(keyword)}</span>`)
+    .join("");
+
+  const meta = [
+    preview && `<span class="meta-pill meta-pill--preview">Preview result</span>`,
+    result.framework_programme && `<span class="meta-pill">${escapeHtml(result.framework_programme)}</span>`,
+    result.programme_division && `<span class="meta-pill">${escapeHtml(result.programme_division)}</span>`,
+    result.deadline && `<span class="meta-pill">Deadline ${escapeHtml(result.deadline)}</span>`,
+    result.budget && `<span class="meta-pill">${escapeHtml(result.budget)}</span>`,
+  ]
+    .filter(Boolean)
+    .join("");
+  const translationNote =
+    result.translated_from_source && result.translation_note
+      ? `<p class="translation-note">${escapeHtml(result.translation_note)}</p>`
+      : "";
+
+  return `
+    <article class="result-card${preview ? " result-card--preview" : ""}" style="animation-delay: ${index * 70}ms">
+      <div class="result-head">
+        <div class="result-head-main">
+          <h3>${escapeHtml(result.title)}</h3>
+          <div class="meta-row">
+            ${meta}
+            ${urgencyMarkup(result.days_left)}
+          </div>
+        </div>
+        <div class="result-head-side">
+          <div class="score-wrap">
+            <span class="score-label">Fit score</span>
+            <span class="${getScoreChipClass(result.fit_score)}">${escapeHtml(result.fit_score)} / 100</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="result-copy">
+        ${translationNote}
+        <div class="copy-block">
+          <strong>Why this matches</strong>
+          <span>${escapeHtml(result.why_match)}</span>
+        </div>
+        <div class="copy-block">
+          <strong>Application angle</strong>
+          <span>${escapeHtml(result.application_angle)}</span>
+        </div>
+      </div>
+
+      <div class="keyword-row">${keywords}</div>
+
+      <div class="meta-row result-links result-actions">
+        <button class="secondary-button" type="button" onclick="toggleGrantDetails('${escapeHtml(result.grant_id)}')">
+          ${expandedGrantIds.has(result.grant_id) ? "Hide details" : "View details"}
+        </button>
+        ${artifactUnlocked ? `<button class="secondary-button" type="button" onclick="toggleComparisonGrant('${escapeHtml(result.grant_id)}')">
+          ${comparisonGrantIds.includes(result.grant_id) ? "Remove favorite" : "Add to favorites"}
+        </button>` : ""}
+        <button class="export-button" type="button" onclick="exportApplicationBrief('${escapeHtml(result.grant_id)}')">Export application brief</button>
+        <a href="${escapeHtml(result.portal_url)}" target="_blank" rel="noreferrer">Open EC portal</a>
+      </div>
+
+      ${renderGrantDetail(result)}
+    </article>
+  `;
+}
+
+function buildLockedTeaserCard(teaser, index) {
+  const teaserMeta = [
+    teaser.fit_score_band && `<span class="meta-pill">${escapeHtml(teaser.fit_score_band)}</span>`,
+    teaser.deadline && `<span class="meta-pill">Deadline ${escapeHtml(teaser.deadline)}</span>`,
+    teaser.budget && `<span class="meta-pill">${escapeHtml(teaser.budget)}</span>`,
+  ]
+    .filter(Boolean)
+    .join("");
+
+  return `
+    <article class="result-card result-card--locked" style="animation-delay: ${(index + 1) * 70}ms">
+      <div class="result-head">
+        <div class="result-head-main">
+          <h3>${escapeHtml(teaser.title)}</h3>
+          <div class="meta-row">${teaserMeta}</div>
+        </div>
+        <div class="result-head-side">
+          <span class="lock-badge">Locked</span>
+        </div>
+      </div>
+      <div class="result-copy">
+        <div class="copy-block">
+          <strong>Explanation locked</strong>
+          <span>Unlock to see why this is a fit and how to position the application.</span>
+        </div>
+      </div>
+      <div class="meta-row result-actions">
+        <a class="secondary-button" href="https://fundingme.eu" target="_blank" rel="noreferrer">View hosted product</a>
+      </div>
+    </article>
+  `;
+}
+
+function buildPreviewPaywallCard(payload) {
+  const lockedCount = Number(payload?.locked_result_count || payload?.locked_result_teasers?.length || 0);
+  const noun = lockedCount === 1 ? "match" : "matches";
+  return `
+    <article class="result-card result-card--paywall">
+      <div class="result-copy">
+        <p class="results-empty-title">${lockedCount} more ${noun} ready to unlock</p>
+        <p class="results-empty-copy">
+          This open-source preview shows the strongest visible result. Use the hosted product to reveal the remaining shortlist and the full paid workflow.
+        </p>
+        <p class="results-empty-copy results-empty-copy--warning">${escapeHtml(BILLING_OUTAGE_MESSAGE)}</p>
+      </div>
+      <div class="meta-row result-actions">
+        <a href="https://fundingme.eu" target="_blank" rel="noreferrer">Open hosted product</a>
+      </div>
+    </article>
+  `;
+}
+
 function renderGrantDetail(result) {
   if (!expandedGrantIds.has(result.grant_id)) {
     return "";
@@ -605,7 +770,7 @@ function renderGrantDetail(result) {
   `;
 }
 
-function renderResults(results, indexedGrants, matchMeta = latestMatchMeta) {
+function renderFullResults(results, indexedGrants, matchMeta = latestMatchMeta) {
   latestResults = results;
   latestMatchMeta = matchMeta || null;
   setResultsBusy(false);
@@ -659,75 +824,120 @@ function renderResults(results, indexedGrants, matchMeta = latestMatchMeta) {
       ? `Showing ${results.length} best-fit results from ${indexedGrants} live candidates.`
       : `Showing ${results.length} best-fit results from the cached corpus while the live active index refresh continues.`;
 
-  resultsList.innerHTML = results
-    .map((result, index) => {
-      const keywords = (result.keywords || [])
-        .map((keyword) => `<span class="keyword-pill">${escapeHtml(keyword)}</span>`)
-        .join("");
-
-      const meta = [
-        result.framework_programme && `<span class="meta-pill">${escapeHtml(result.framework_programme)}</span>`,
-        result.programme_division && `<span class="meta-pill">${escapeHtml(result.programme_division)}</span>`,
-        result.deadline && `<span class="meta-pill">Deadline ${escapeHtml(result.deadline)}</span>`,
-        result.budget && `<span class="meta-pill">${escapeHtml(result.budget)}</span>`,
-      ]
-        .filter(Boolean)
-        .join("");
-      const translationNote =
-        result.translated_from_source && result.translation_note
-          ? `<p class="translation-note">${escapeHtml(result.translation_note)}</p>`
-          : "";
-
-      return `
-        <article class="result-card" style="animation-delay: ${index * 70}ms">
-          <div class="result-head">
-            <div class="result-head-main">
-              <h3>${escapeHtml(result.title)}</h3>
-              <div class="meta-row">
-                ${meta}
-                ${urgencyMarkup(result.days_left)}
-              </div>
-            </div>
-            <div class="result-head-side">
-              <div class="score-wrap">
-                <span class="score-label">Fit score</span>
-                <span class="${getScoreChipClass(result.fit_score)}">${escapeHtml(result.fit_score)} / 100</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="result-copy">
-            ${translationNote}
-            <div class="copy-block">
-              <strong>Why this matches</strong>
-              <span>${escapeHtml(result.why_match)}</span>
-            </div>
-            <div class="copy-block">
-              <strong>Application angle</strong>
-              <span>${escapeHtml(result.application_angle)}</span>
-            </div>
-          </div>
-
-          <div class="keyword-row">${keywords}</div>
-
-          <div class="meta-row result-links result-actions">
-            <button class="secondary-button" type="button" onclick="toggleGrantDetails('${escapeHtml(result.grant_id)}')">
-              ${expandedGrantIds.has(result.grant_id) ? "Hide details" : "View details"}
-            </button>
-            <button class="secondary-button" type="button" onclick="toggleComparisonGrant('${escapeHtml(result.grant_id)}')">
-              ${comparisonGrantIds.includes(result.grant_id) ? "Remove favorite" : "Add to favorites"}
-            </button>
-            <button class="export-button" type="button" onclick="exportApplicationBrief('${escapeHtml(result.grant_id)}')">Export application brief</button>
-            <a href="${escapeHtml(result.portal_url)}" target="_blank" rel="noreferrer">Open EC portal</a>
-          </div>
-
-          ${renderGrantDetail(result)}
-        </article>
-      `;
-    })
-    .join("");
+  resultsList.innerHTML = results.map((result, index) => buildResultCard(result, index)).join("");
 
   renderComparisonPanel();
+}
+
+function rerenderLatestMatchExperience() {
+  if (latestMatchMeta?.access_state || latestMatchMeta?.preview_result || latestMatchMeta?.locked_result_teasers) {
+    renderMatchExperience(latestMatchMeta);
+    return;
+  }
+  renderFullResults(latestResults, latestStatus?.indexed_grants || latestResults.length, latestMatchMeta);
+}
+
+function renderPreviewResult(payload) {
+  const previewResult = payload?.preview_result;
+  latestResults = previewResult ? [previewResult] : [];
+  resultsById.clear();
+  if (previewResult) {
+    resultsById.set(previewResult.grant_id, previewResult);
+  }
+  resultsEmpty.hidden = true;
+  resultsList.innerHTML = previewResult ? buildResultCard(previewResult, 0, { preview: true, artifactUnlocked: false }) : "";
+}
+
+function renderLockedTeasers(payload) {
+  const lockedTeasers = payload?.locked_result_teasers || [];
+  const lockedCount = Number(payload?.locked_result_count || lockedTeasers.length || 0);
+  const summaryCopy =
+    lockedCount > 0
+      ? `${lockedCount} more ${lockedCount === 1 ? "match is" : "matches are"} ready to unlock.`
+      : "Full results are ready to unlock.";
+
+  showBillingPanel();
+  if (lockedResultsSummary) {
+    lockedResultsSummary.textContent = summaryCopy;
+  }
+
+  const teaserMarkup = lockedTeasers
+    .map((teaser, index) => buildLockedTeaserCard(teaser, index))
+    .join("");
+  resultsList.innerHTML += buildPreviewPaywallCard(payload) + teaserMarkup;
+}
+
+function renderUnlockedResults(payload) {
+  hideBillingPanel();
+  renderFullResults(payload?.results || [], payload?.indexed_grants || 0, {
+    ...payload,
+    access_state: "unlocked",
+    artifact_unlocked: true,
+  });
+}
+
+function renderBillingActions(payload) {
+  if (payload?.access_state === "unlocked") {
+    hideBillingPanel();
+    return;
+  }
+  showBillingPanel();
+  if (lockedResultsSummary) {
+    const lockedCount = Number(payload?.locked_result_count || payload?.locked_result_teasers?.length || 0);
+    lockedResultsSummary.textContent =
+      lockedCount > 0
+        ? `${lockedCount} more ${lockedCount === 1 ? "match" : "matches"} ready to unlock`
+        : "Unlock required for the full search";
+  }
+  setBillingMessage(BILLING_OUTAGE_MESSAGE);
+}
+
+function renderMatchExperience(payload) {
+  latestMatchMeta = {
+    ...(payload || {}),
+    artifact_unlocked: payload?.artifact_unlocked ?? payload?.access_state === "unlocked",
+    billing_available: payload?.billing_available ?? false,
+  };
+  setResultsBusy(false);
+  comparisonGrantIds.length = latestMatchMeta?.artifact_unlocked ? comparisonGrantIds.length : 0;
+  renderComparisonPanel();
+
+  if (latestMatchMeta.access_state === "unlocked") {
+    renderUnlockedResults(latestMatchMeta);
+    return;
+  }
+
+  updateDocumentTitle(latestMatchMeta.preview_result ? 1 : 0);
+  renderPreviewResult(latestMatchMeta);
+  renderLockedTeasers(latestMatchMeta);
+  renderBillingActions(latestMatchMeta);
+
+  const lockedCount = Number(latestMatchMeta.locked_result_count || latestMatchMeta.locked_result_teasers?.length || 0);
+  resultsMeta.textContent = lockedCount
+    ? `Showing 1 preview result. ${lockedCount} more ${lockedCount === 1 ? "match" : "matches"} are available in the hosted product.`
+    : "Showing the visible preview result.";
+}
+
+function isPreviewAwareMatchPayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return false;
+  }
+  return (
+    Object.prototype.hasOwnProperty.call(payload, "access_state") ||
+    Object.prototype.hasOwnProperty.call(payload, "preview_result") ||
+    Object.prototype.hasOwnProperty.call(payload, "locked_result_teasers") ||
+    Object.prototype.hasOwnProperty.call(payload, "artifact_id")
+  );
+}
+
+function renderResults(results, indexedGrants, matchMeta = latestMatchMeta) {
+  renderUnlockedResults({
+    ...(matchMeta || {}),
+    results,
+    indexed_grants: indexedGrants,
+    access_state: "unlocked",
+    artifact_unlocked: true,
+  });
 }
 
 function getValidationMessage(errorPayload) {
@@ -1115,18 +1325,18 @@ async function fetchGrantDetail(grantId) {
 async function toggleGrantDetails(grantId) {
   if (expandedGrantIds.has(grantId)) {
     expandedGrantIds.delete(grantId);
-    renderResults(latestResults, latestStatus?.indexed_grants || latestResults.length, latestMatchMeta);
+    rerenderLatestMatchExperience();
     return;
   }
 
   expandedGrantIds.add(grantId);
   if (grantDetailsById.has(grantId)) {
-    renderResults(latestResults, latestStatus?.indexed_grants || latestResults.length, latestMatchMeta);
+    rerenderLatestMatchExperience();
     return;
   }
 
   loadingGrantIds.add(grantId);
-  renderResults(latestResults, latestStatus?.indexed_grants || latestResults.length, latestMatchMeta);
+  rerenderLatestMatchExperience();
 
   try {
     grantDetailsById.set(grantId, await fetchGrantDetail(grantId));
@@ -1135,7 +1345,7 @@ async function toggleGrantDetails(grantId) {
     grantDetailsById.set(grantId, buildFallbackGrantDetail(grantId));
   } finally {
     loadingGrantIds.delete(grantId);
-    renderResults(latestResults, latestStatus?.indexed_grants || latestResults.length, latestMatchMeta);
+    rerenderLatestMatchExperience();
   }
 }
 
@@ -1339,8 +1549,20 @@ async function submitMatch(event) {
     }
 
     const payload = await response.json();
-    setFormFeedback(`Match completed. Showing ${payload.results?.length || 0} shortlisted grants.`);
-    renderResults(payload.results || [], payload.indexed_grants || 0, payload);
+    const previewAwarePayload = isPreviewAwareMatchPayload(payload);
+    if (previewAwarePayload) {
+      const visibleCount = payload.access_state === "unlocked" ? payload.results?.length || 0 : payload.preview_result ? 1 : 0;
+      const lockedCount = payload.locked_result_count || payload.locked_result_teasers?.length || 0;
+      setFormFeedback(
+        payload.access_state === "unlocked"
+          ? `Match completed. Showing ${visibleCount} shortlisted grants.`
+          : `Preview ready. Showing ${visibleCount} visible result${lockedCount ? ` and ${lockedCount} locked matches` : ""}.`,
+      );
+      renderMatchExperience(payload);
+    } else {
+      setFormFeedback(`Match completed. Showing ${payload.results?.length || 0} shortlisted grants.`);
+      renderResults(payload.results || [], payload.indexed_grants || 0, payload);
+    }
   } catch (error) {
     console.error(error);
     const message = error.message || "Matching failed.";
@@ -1418,9 +1640,11 @@ showIntroResultsState();
 fetchStatus();
 
 window.grantDetailsById = grantDetailsById;
+window.renderMatchExperience = renderMatchExperience;
 window.renderResults = renderResults;
 window.updateStatus = updateStatus;
 window.toggleGrantDetails = toggleGrantDetails;
 window.toggleComparisonGrant = toggleComparisonGrant;
 window.exportApplicationBrief = exportApplicationBrief;
 globalThis.grantDetailsById = grantDetailsById;
+globalThis.renderMatchExperience = renderMatchExperience;
