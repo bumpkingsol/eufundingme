@@ -573,9 +573,11 @@ def create_app(
     @app.post("/api/billing/guest-checkout", response_model=GuestCheckoutResponse)
     def guest_checkout(
         payload: GuestCheckoutRequest,
+        request: Request,
         x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
     ) -> GuestCheckoutResponse:
         request_id = resolve_request_id(x_request_id)
+        account_context = resolve_account_context(request)
         bind_request_context(
             operation="guest_checkout",
             request_id=request_id,
@@ -586,6 +588,7 @@ def create_app(
                 artifact_id=payload.artifact_id,
                 fingerprint=payload.fingerprint,
                 email=payload.email,
+                account_context=account_context,
             )
         except BillingServiceError as exc:
             capture_backend_exception(
@@ -602,9 +605,11 @@ def create_app(
     @app.post("/api/billing/subscription-checkout", response_model=SubscriptionCheckoutResponse)
     def subscription_checkout(
         payload: SubscriptionCheckoutRequest,
+        request: Request,
         x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
     ) -> SubscriptionCheckoutResponse:
         request_id = resolve_request_id(x_request_id)
+        account_context = resolve_account_context(request)
         bind_request_context(
             operation="subscription_checkout",
             request_id=request_id,
@@ -615,6 +620,7 @@ def create_app(
                 email=payload.email,
                 success_url=payload.success_url,
                 cancel_url=payload.cancel_url,
+                account_context=account_context,
             )
         except BillingServiceError as exc:
             capture_backend_exception(
@@ -631,11 +637,13 @@ def create_app(
     @app.get("/api/search-artifacts/{artifact_id}/access", response_model=ArtifactAccessResponse)
     def search_artifact_access(
         artifact_id: str,
+        request: Request,
         email: str | None = None,
         fingerprint: str | None = None,
         x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
     ) -> ArtifactAccessResponse:
         request_id = resolve_request_id(x_request_id)
+        account_context = resolve_account_context(request)
         bind_request_context(
             operation="artifact_access",
             request_id=request_id,
@@ -646,6 +654,7 @@ def create_app(
                 artifact_id=artifact_id,
                 email=email,
                 fingerprint=fingerprint,
+                account_context=account_context,
             )
         except BillingServiceError as exc:
             capture_backend_exception(
@@ -663,9 +672,11 @@ def create_app(
     def search_artifact_unlock_with_credit(
         artifact_id: str,
         payload: CreditUnlockRequest,
+        request: Request,
         x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
     ) -> CreditUnlockResponse:
         request_id = resolve_request_id(x_request_id)
+        account_context = resolve_account_context(request)
         bind_request_context(
             operation="artifact_credit_unlock",
             request_id=request_id,
@@ -676,11 +687,13 @@ def create_app(
                 artifact_id=artifact_id,
                 email=payload.email,
                 fingerprint=payload.fingerprint,
+                account_context=account_context,
             )
             access = app.state.billing_client.get_artifact_access(
                 artifact_id=artifact_id,
                 email=payload.email,
                 fingerprint=payload.fingerprint,
+                account_context=account_context,
             )
         except BillingServiceError as exc:
             capture_backend_exception(
@@ -704,16 +717,21 @@ def create_app(
     @app.get("/api/account/dashboard", response_model=AccountDashboardResponse)
     def account_dashboard(
         email: str,
+        request: Request,
         x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
     ) -> AccountDashboardResponse:
         request_id = resolve_request_id(x_request_id)
+        account_context = resolve_account_context(request)
         bind_request_context(
             operation="account_dashboard",
             request_id=request_id,
             model=active_settings.openai_match_model if active_settings.openai_api_key else None,
         )
         try:
-            dashboard = app.state.billing_client.get_account_dashboard(email=email)
+            dashboard = app.state.billing_client.get_account_dashboard(
+                email=email,
+                account_context=account_context,
+            )
         except BillingServiceError as exc:
             capture_backend_exception(
                 exc,
@@ -748,15 +766,23 @@ def create_app(
                 status_code=503,
                 detail=build_application_brief_error("application brief service unavailable", request_id),
             )
-        if not payload.artifact_id:
-            raise HTTPException(status_code=422, detail={"code": "ARTIFACT_ID_REQUIRED"})
+        account_context = resolve_account_context(request)
         require_artifact_access(
             billing_client=app.state.billing_client,
             artifact_id=payload.artifact_id,
-            account_context=resolve_account_context(request),
+            account_context=account_context,
+            on_billing_error=lambda exc: capture_backend_exception(
+                exc,
+                component="billing",
+                operation="get_artifact_access",
+                request_id=request_id,
+                fallback_used=True,
+                context={"artifact_id": payload.artifact_id},
+            ),
         )
         try:
             response = brief_service.generate(
+                artifact_id=payload.artifact_id,
                 company_description=payload.company_description,
                 match_result=payload.match_result.model_dump(),
                 grant_detail=payload.grant_detail.model_dump(),

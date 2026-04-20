@@ -256,7 +256,7 @@ class ApplicationBriefSections(BaseModel):
 
 class ApplicationBriefRequest(BaseModel):
     company_description: str = Field(min_length=20, max_length=5000)
-    artifact_id: str | None = None
+    artifact_id: str = Field(min_length=1)
     match_result: MatchResult
     grant_detail: GrantDetailResponse
 

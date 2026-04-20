@@ -35,6 +35,12 @@ class AccountDashboardPayload:
     dashboard_url: str | None = None
 
 
+class AccountContextLike(Protocol):
+    session_token: str | None
+    email_hint: str | None
+    fingerprint_hint: str | None
+
+
 class BillingClient(Protocol):
     def create_guest_unlock_checkout(
         self,
@@ -42,6 +48,7 @@ class BillingClient(Protocol):
         artifact_id: str,
         fingerprint: str,
         email: str,
+        account_context: AccountContextLike | None = None,
     ) -> CheckoutSessionPayload: ...
 
     def create_subscription_checkout(
@@ -50,6 +57,7 @@ class BillingClient(Protocol):
         email: str,
         success_url: str | None = None,
         cancel_url: str | None = None,
+        account_context: AccountContextLike | None = None,
     ) -> CheckoutSessionPayload: ...
 
     def get_artifact_access(
@@ -58,6 +66,7 @@ class BillingClient(Protocol):
         artifact_id: str,
         email: str | None = None,
         fingerprint: str | None = None,
+        account_context: AccountContextLike | None = None,
     ) -> ArtifactAccessPayload: ...
 
     def consume_credit_unlock(
@@ -66,9 +75,15 @@ class BillingClient(Protocol):
         artifact_id: str,
         email: str,
         fingerprint: str | None = None,
+        account_context: AccountContextLike | None = None,
     ) -> CreditUnlockPayload: ...
 
-    def get_account_dashboard(self, *, email: str) -> AccountDashboardPayload: ...
+    def get_account_dashboard(
+        self,
+        *,
+        email: str,
+        account_context: AccountContextLike | None = None,
+    ) -> AccountDashboardPayload: ...
 
 
 class StubBillingClient:
@@ -78,6 +93,7 @@ class StubBillingClient:
         artifact_id: str,
         fingerprint: str,
         email: str,
+        account_context: AccountContextLike | None = None,
     ) -> CheckoutSessionPayload:
         raise BillingServiceError("billing service unavailable")
 
@@ -87,6 +103,7 @@ class StubBillingClient:
         email: str,
         success_url: str | None = None,
         cancel_url: str | None = None,
+        account_context: AccountContextLike | None = None,
     ) -> CheckoutSessionPayload:
         raise BillingServiceError("billing service unavailable")
 
@@ -96,6 +113,7 @@ class StubBillingClient:
         artifact_id: str,
         email: str | None = None,
         fingerprint: str | None = None,
+        account_context: AccountContextLike | None = None,
     ) -> ArtifactAccessPayload:
         return ArtifactAccessPayload(has_access=False, status="billing_disabled")
 
@@ -105,10 +123,16 @@ class StubBillingClient:
         artifact_id: str,
         email: str,
         fingerprint: str | None = None,
+        account_context: AccountContextLike | None = None,
     ) -> CreditUnlockPayload:
         raise BillingServiceError("billing service unavailable")
 
-    def get_account_dashboard(self, *, email: str) -> AccountDashboardPayload:
+    def get_account_dashboard(
+        self,
+        *,
+        email: str,
+        account_context: AccountContextLike | None = None,
+    ) -> AccountDashboardPayload:
         raise BillingServiceError("billing service unavailable")
 
 
@@ -129,6 +153,19 @@ class HttpBillingClient:
     @staticmethod
     def _compact_values(values: dict[str, object | None]) -> dict[str, object]:
         return {key: value for key, value in values.items() if value is not None}
+
+    @staticmethod
+    def _build_headers(account_context: AccountContextLike | None = None) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if account_context is None:
+            return headers
+        if getattr(account_context, "session_token", None):
+            headers["X-Account-Session"] = account_context.session_token or ""
+        if getattr(account_context, "email_hint", None):
+            headers["X-Account-Email"] = account_context.email_hint or ""
+        if getattr(account_context, "fingerprint_hint", None):
+            headers["X-Artifact-Fingerprint"] = account_context.fingerprint_hint or ""
+        return headers
 
     @staticmethod
     def _require_object(payload: object, *, context: str) -> dict[str, object]:
@@ -173,12 +210,16 @@ class HttpBillingClient:
         *,
         json: dict[str, object] | None = None,
         params: dict[str, object] | None = None,
+        account_context: AccountContextLike | None = None,
     ) -> dict[str, object]:
         try:
             response = self.session.request(
                 method,
                 f"{self.base_url}{path}",
-                headers={"Authorization": f"Bearer {self.shared_token}"},
+                headers={
+                    "Authorization": f"Bearer {self.shared_token}",
+                    **self._build_headers(account_context),
+                },
                 json=json,
                 params=self._compact_values(params or {}),
                 timeout=self.timeout_seconds,
@@ -196,6 +237,7 @@ class HttpBillingClient:
         artifact_id: str,
         fingerprint: str,
         email: str,
+        account_context: AccountContextLike | None = None,
     ) -> CheckoutSessionPayload:
         payload = self._request(
             "POST",
@@ -205,6 +247,7 @@ class HttpBillingClient:
                 "fingerprint": fingerprint,
                 "email": email,
             },
+            account_context=account_context,
         )
         checkout_url = self._require_str(payload, "checkout_url", context="guest unlock checkout")
         return CheckoutSessionPayload(checkout_url=checkout_url)
@@ -215,6 +258,7 @@ class HttpBillingClient:
         email: str,
         success_url: str | None = None,
         cancel_url: str | None = None,
+        account_context: AccountContextLike | None = None,
     ) -> CheckoutSessionPayload:
         payload = self._request(
             "POST",
@@ -224,6 +268,7 @@ class HttpBillingClient:
                 "success_url": success_url,
                 "cancel_url": cancel_url,
             },
+            account_context=account_context,
         )
         checkout_url = self._require_str(payload, "checkout_url", context="subscription checkout")
         return CheckoutSessionPayload(checkout_url=checkout_url)
@@ -234,6 +279,7 @@ class HttpBillingClient:
         artifact_id: str,
         email: str | None = None,
         fingerprint: str | None = None,
+        account_context: AccountContextLike | None = None,
     ) -> ArtifactAccessPayload:
         payload = self._request(
             "GET",
@@ -242,6 +288,7 @@ class HttpBillingClient:
                 "email": email,
                 "fingerprint": fingerprint,
             },
+            account_context=account_context,
         )
         return ArtifactAccessPayload(
             has_access=self._require_bool(payload, "has_access", context="artifact access"),
@@ -255,6 +302,7 @@ class HttpBillingClient:
         artifact_id: str,
         email: str,
         fingerprint: str | None = None,
+        account_context: AccountContextLike | None = None,
     ) -> CreditUnlockPayload:
         payload = self._request(
             "POST",
@@ -264,11 +312,22 @@ class HttpBillingClient:
                 "email": email,
                 "fingerprint": fingerprint,
             },
+            account_context=account_context,
         )
         return CreditUnlockPayload(consumed=self._require_bool(payload, "consumed", context="credit unlock"))
 
-    def get_account_dashboard(self, *, email: str) -> AccountDashboardPayload:
-        payload = self._request("GET", "/v1/account/dashboard", params={"email": email})
+    def get_account_dashboard(
+        self,
+        *,
+        email: str,
+        account_context: AccountContextLike | None = None,
+    ) -> AccountDashboardPayload:
+        payload = self._request(
+            "GET",
+            "/v1/account/dashboard",
+            params={"email": email},
+            account_context=account_context,
+        )
         return AccountDashboardPayload(
             credits_remaining=self._require_int(payload, "credits_remaining", context="account dashboard"),
             dashboard_url=self._require_str(payload, "dashboard_url", context="account dashboard"),

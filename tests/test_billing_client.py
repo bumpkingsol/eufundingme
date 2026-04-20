@@ -84,7 +84,14 @@ def httpx_mock(monkeypatch):
     return mock
 
 
-def test_http_billing_client_sends_shared_auth_header(httpx_mock):
+@dataclass(slots=True)
+class _AccountContext:
+    session_token: str | None = None
+    email_hint: str | None = None
+    fingerprint_hint: str | None = None
+
+
+def test_http_billing_client_sends_shared_auth_header_and_account_context(httpx_mock):
     client = HttpBillingClient(
         base_url="https://billing.internal",
         shared_token="secret-token",
@@ -101,10 +108,18 @@ def test_http_billing_client_sends_shared_auth_header(httpx_mock):
         artifact_id="artifact-1",
         fingerprint="fp-1",
         email="founder@example.com",
+        account_context=_AccountContext(
+            session_token="opaque-session",
+            email_hint="founder@example.com",
+            fingerprint_hint="fp-1",
+        ),
     )
 
     assert payload.checkout_url == "https://checkout.stripe.com/test"
     assert httpx_mock.calls[0]["headers"]["Authorization"] == "Bearer secret-token"
+    assert httpx_mock.calls[0]["headers"]["X-Account-Session"] == "opaque-session"
+    assert httpx_mock.calls[0]["headers"]["X-Account-Email"] == "founder@example.com"
+    assert httpx_mock.calls[0]["headers"]["X-Artifact-Fingerprint"] == "fp-1"
     assert httpx_mock.calls[0]["json"] == {
         "artifact_id": "artifact-1",
         "fingerprint": "fp-1",

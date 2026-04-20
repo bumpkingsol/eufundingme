@@ -40,12 +40,14 @@ class ApplicationBriefService:
     def generate(
         self,
         *,
+        artifact_id: str,
         company_description: str,
         match_result: dict,
         grant_detail: dict,
     ) -> ApplicationBriefResponse:
         started_at = time.perf_counter()
         request = ApplicationBriefRequest(
+            artifact_id=artifact_id,
             company_description=company_description,
             match_result=match_result,
             grant_detail=grant_detail,
