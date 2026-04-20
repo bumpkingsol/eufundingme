@@ -15,7 +15,7 @@ def run_frontend_script_test(script_source: str) -> subprocess.CompletedProcess[
     )
 
 
-def build_frontend_harness(test_body: str) -> str:
+def build_frontend_harness(test_body: str, before_bootstrap: str = "") -> str:
     app_js = (Path(__file__).resolve().parents[1] / "frontend" / "app.js").as_posix()
     return f"""
 import fs from "node:fs";
@@ -208,6 +208,34 @@ const locationState = {{
     this.assigned.push(value);
   }},
 }};
+function createStorage() {{
+  const state = new Map();
+  return {{
+    getItem(key) {{
+      return state.has(key) ? state.get(key) : null;
+    }},
+    setItem(key, value) {{
+      state.set(key, String(value));
+    }},
+    removeItem(key) {{
+      state.delete(key);
+    }},
+    clear() {{
+      state.clear();
+    }},
+    key(index) {{
+      return Array.from(state.keys())[index] ?? null;
+    }},
+    get length() {{
+      return state.size;
+    }},
+    _dump() {{
+      return Object.fromEntries(state.entries());
+    }},
+  }};
+}}
+const localStorage = createStorage();
+const sessionStorage = createStorage();
 
 const timerQueue = [];
 let nextTimerId = 1;
@@ -364,11 +392,15 @@ const context = {{
   document,
   fetch: fetchMock,
   navigator,
+  localStorage,
+  sessionStorage,
   window: {{
     setTimeout: setTimeoutMock,
     clearTimeout: clearTimeoutMock,
     navigator,
     location: locationState,
+    localStorage,
+    sessionStorage,
     open() {{
       const popup = {{
         html: "",
@@ -395,6 +427,8 @@ const context = {{
   TextEncoder,
 }};
 context.globalThis = context;
+
+{before_bootstrap}
 
 vm.runInNewContext(source, context, {{ filename: "app.js" }});
 await Promise.resolve();
@@ -1519,6 +1553,68 @@ if (!resultsMeta.textContent.includes("Unlock pending")) {
     assert result.returncode == 0, result.stderr
 
 
+def test_frontend_refresh_artifact_access_failure_stays_in_page_with_billing_message():
+    script = build_frontend_harness(
+        """
+artifactAccessResponse = {
+  ok: false,
+  json: async () => ({
+    detail: {
+      message: "Billing service unavailable",
+    },
+  }),
+};
+
+billingEmailInput.value = "founder@example.com";
+appContext.renderMatchExperience({
+  artifact_id: "artifact-1",
+  preview_result: {
+    grant_id: "TOPIC-1",
+    title: "Grant TOPIC-1",
+    status: "Open",
+    deadline: "2026-08-01",
+    days_left: 20,
+    budget: "EUR 5M",
+    portal_url: "https://example.com/TOPIC-1",
+    fit_score: 90,
+    why_match: "Visible why match",
+    application_angle: "Visible angle",
+    framework_programme: "Horizon Europe",
+    programme_division: "Cluster 4",
+    keywords: ["ai"],
+  },
+  locked_result_teasers: [],
+  locked_result_count: 1,
+  access_state: "preview",
+});
+
+let threw = false;
+try {
+  await appContext.refreshArtifactAccess({ scheduleNextPoll: true });
+} catch (_error) {
+  threw = true;
+}
+
+if (threw) {
+  throw new Error("refreshArtifactAccess should fail in-page without throwing");
+}
+if (!billingMessage.textContent.includes("Billing service unavailable")) {
+  throw new Error(`Expected billing error message, got: ${billingMessage.textContent}`);
+}
+if (pendingUnlockStatus.hidden !== false) {
+  throw new Error("Expected pending unlock status area to show a recovery message");
+}
+if (!pendingUnlockStatus.textContent.includes("could not refresh unlock status")) {
+  throw new Error(`Unexpected pending unlock failure copy: ${pendingUnlockStatus.textContent}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_frontend_blocks_brief_export_until_artifact_is_unlocked():
     script = build_frontend_harness(
         """
@@ -1554,6 +1650,86 @@ if (!billingMessage.textContent.includes("Unlock this search")) {
   throw new Error(`Unexpected locked brief message: ${billingMessage.textContent}`);
 }
 """
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_restores_checkout_context_on_startup_and_resumes_unlock_polling():
+    script = build_frontend_harness(
+        """
+if (!billingPanel || billingPanel.hidden) {
+  throw new Error("Expected restored billing panel to be visible");
+}
+if (billingEmailInput.value !== "founder@example.com") {
+  throw new Error(`Expected restored billing email, got ${billingEmailInput.value}`);
+}
+if (!resultsList.innerHTML.includes("TOPIC-1")) {
+  throw new Error(`Expected restored preview result markup: ${resultsList.innerHTML}`);
+}
+if (!resultsMeta.textContent.includes("Unlock pending")) {
+  throw new Error(`Expected pending unlock meta on startup, got: ${resultsMeta.textContent}`);
+}
+
+const accessCalls = fetchCalls.filter((call) => call.url.startsWith("/api/search-artifacts/artifact-1/access"));
+if (accessCalls.length !== 1) {
+  throw new Error(`Expected startup unlock poll, got ${accessCalls.length}`);
+}
+
+const savedState = localStorage.getItem("eufundingme.checkoutContext");
+if (!savedState) {
+  throw new Error("Expected checkout context to remain persisted while unlock is pending");
+}
+""",
+        before_bootstrap="""
+artifactAccessResponse = {
+  ok: true,
+  json: async () => ({
+    artifact_id: "artifact-1",
+    has_access: false,
+    status: "pending_unlock",
+    access_state: "pending_unlock",
+    expires_at: "2026-04-27T00:00:00Z",
+  }),
+};
+localStorage.setItem(
+  "eufundingme.checkoutContext",
+  JSON.stringify({
+    artifact_id: "artifact-1",
+    access_state: "pending_unlock",
+    email: "founder@example.com",
+    preview_result: {
+      grant_id: "TOPIC-1",
+      title: "Grant TOPIC-1",
+      status: "Open",
+      deadline: "2026-08-01",
+      days_left: 20,
+      budget: "EUR 5M",
+      portal_url: "https://example.com/TOPIC-1",
+      fit_score: 90,
+      why_match: "Visible why match",
+      application_angle: "Visible angle",
+      framework_programme: "Horizon Europe",
+      programme_division: "Cluster 4",
+      keywords: ["ai"],
+    },
+    locked_result_teasers: [
+      {
+        grant_id: "TOPIC-2",
+        title: "Grant TOPIC-2",
+        fit_score_band: "High fit",
+        deadline: "2026-09-01",
+        budget: "EUR 2M",
+      },
+    ],
+    locked_result_count: 1,
+    artifact_unlocked: false,
+    checkout_pending: true,
+  }),
+);
+""",
     )
 
     result = run_frontend_script_test(script)

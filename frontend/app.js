@@ -4,6 +4,7 @@ const DEFAULT_EMPTY_STATE =
 const MIN_DESCRIPTION_LENGTH = 20;
 const PROFILE_RESOLVE_DEBOUNCE_MS = 450;
 const MAX_COMPARISON_GRANTS = 3;
+const CHECKOUT_CONTEXT_STORAGE_KEY = "eufundingme.checkoutContext";
 
 const form = document.querySelector("#match-form");
 const descriptionInput = document.querySelector("#company-description");
@@ -325,6 +326,74 @@ function setBillingActionsDisabled(isDisabled) {
   subscriptionCheckoutButton && (subscriptionCheckoutButton.disabled = isDisabled);
   creditUnlockButton && (creditUnlockButton.disabled = isDisabled);
   refreshAccessButton && (refreshAccessButton.disabled = isDisabled);
+}
+
+function getPersistentStorage() {
+  try {
+    return window.localStorage || globalThis.localStorage || null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function buildCheckoutContextSnapshot(overrides = {}) {
+  const baseMeta = latestMatchMeta || {};
+  return {
+    artifact_id: overrides.artifact_id ?? baseMeta.artifact_id ?? null,
+    access_state: overrides.access_state ?? baseMeta.access_state ?? "preview",
+    email: overrides.email ?? getBillingEmailValue() ?? "",
+    preview_result: overrides.preview_result ?? baseMeta.preview_result ?? null,
+    locked_result_teasers: overrides.locked_result_teasers ?? baseMeta.locked_result_teasers ?? [],
+    locked_result_count: overrides.locked_result_count ?? baseMeta.locked_result_count ?? 0,
+    artifact_unlocked: overrides.artifact_unlocked ?? baseMeta.artifact_unlocked ?? false,
+    checkout_pending: overrides.checkout_pending ?? false,
+  };
+}
+
+function persistCheckoutContext(overrides = {}) {
+  const storage = getPersistentStorage();
+  if (!storage) {
+    return;
+  }
+  const snapshot = buildCheckoutContextSnapshot(overrides);
+  if (!snapshot.artifact_id) {
+    return;
+  }
+  try {
+    storage.setItem(CHECKOUT_CONTEXT_STORAGE_KEY, JSON.stringify(snapshot));
+  } catch (_error) {
+  }
+}
+
+function clearCheckoutContext() {
+  const storage = getPersistentStorage();
+  if (!storage) {
+    return;
+  }
+  try {
+    storage.removeItem(CHECKOUT_CONTEXT_STORAGE_KEY);
+  } catch (_error) {
+  }
+}
+
+function readCheckoutContext() {
+  const storage = getPersistentStorage();
+  if (!storage) {
+    return null;
+  }
+  try {
+    const value = storage.getItem(CHECKOUT_CONTEXT_STORAGE_KEY);
+    if (!value) {
+      return null;
+    }
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || !parsed.artifact_id) {
+      return null;
+    }
+    return parsed;
+  } catch (_error) {
+    return null;
+  }
 }
 
 function redirectToUrl(url) {
@@ -955,6 +1024,7 @@ function renderLockedTeasers(payload) {
 
 function renderUnlockedResults(payload) {
   hideBillingPanel();
+  clearCheckoutContext();
   renderFullResults(payload?.results || [], payload?.indexed_grants || 0, {
     ...payload,
     access_state: "unlocked",
@@ -990,6 +1060,11 @@ function renderMatchExperience(payload) {
     ...(payload || {}),
     artifact_unlocked: payload?.artifact_unlocked ?? payload?.access_state === "unlocked",
   };
+  if (latestMatchMeta?.artifact_id) {
+    persistCheckoutContext({
+      checkout_pending: Boolean(latestMatchMeta?.checkout_pending || latestMatchMeta?.access_state === "pending_unlock"),
+    });
+  }
   setResultsBusy(false);
   comparisonGrantIds.length = latestMatchMeta?.artifact_unlocked ? comparisonGrantIds.length : 0;
   renderComparisonPanel();
@@ -1523,11 +1598,21 @@ async function refreshArtifactAccess({ scheduleNextPoll = false } = {}) {
     };
 
     if (latestMatchMeta.artifact_unlocked) {
+      persistCheckoutContext({
+        access_state: latestMatchMeta.access_state,
+        artifact_unlocked: true,
+        checkout_pending: false,
+      });
       setBillingMessage("Unlock confirmed. Reloading the full search results.");
       await submitMatch({ preventDefault() {} });
       return;
     }
 
+    persistCheckoutContext({
+      access_state: latestMatchMeta.access_state,
+      artifact_unlocked: latestMatchMeta.artifact_unlocked,
+      checkout_pending: (access.access_state || access.status) === "pending_unlock",
+    });
     renderMatchExperience(latestMatchMeta);
     if ((access.access_state || access.status) === "pending_unlock") {
       setPendingUnlockMessage("Payment is still being confirmed. We will keep checking.");
@@ -1538,6 +1623,10 @@ async function refreshArtifactAccess({ scheduleNextPoll = false } = {}) {
     } else {
       clearUnlockPoll();
     }
+  } catch (error) {
+    clearUnlockPoll();
+    setBillingMessage(error.message || "Could not refresh unlock status.", "error");
+    setPendingUnlockMessage("We could not refresh unlock status right now. Try again in a moment.");
   } finally {
     setBillingActionsDisabled(false);
   }
@@ -1560,6 +1649,7 @@ async function launchGuestCheckout() {
   setBillingMessage("");
   try {
     syncBillingEmailInputs(email);
+    persistCheckoutContext({ email, checkout_pending: true });
     const response = await fetch("/api/billing/guest-checkout", {
       method: "POST",
       headers: {
@@ -1597,6 +1687,7 @@ async function launchSubscriptionCheckout() {
   setBillingActionsDisabled(true);
   try {
     syncBillingEmailInputs(email);
+    persistCheckoutContext({ email, checkout_pending: true });
     const response = await fetch("/api/billing/subscription-checkout", {
       method: "POST",
       headers: {
@@ -1731,6 +1822,25 @@ async function loadAccountDashboard() {
     }
   } finally {
     dashboardLoadButton && (dashboardLoadButton.disabled = false);
+  }
+}
+
+function restoreCheckoutContextOnStartup() {
+  const savedContext = readCheckoutContext();
+  if (!savedContext) {
+    return;
+  }
+
+  syncBillingEmailInputs(savedContext.email || "");
+  renderMatchExperience({
+    ...savedContext,
+    access_state: savedContext.access_state || (savedContext.checkout_pending ? "pending_unlock" : "preview"),
+  });
+
+  if (savedContext.checkout_pending || savedContext.access_state === "pending_unlock") {
+    setPendingUnlockMessage("Unlock pending. Checking for payment confirmation…");
+    clearUnlockPoll();
+    void refreshArtifactAccess({ scheduleNextPoll: true });
   }
 }
 
@@ -2000,6 +2110,7 @@ form.addEventListener("submit", submitMatch);
 renderDashboardSummary(null);
 renderComparisonPanel();
 showIntroResultsState();
+restoreCheckoutContextOnStartup();
 fetchStatus();
 
 window.grantDetailsById = grantDetailsById;
