@@ -1978,7 +1978,14 @@ def test_grant_detail_endpoint_uses_request_scoped_live_grant_fallback_when_upst
         def get_grants(self):
             return []
 
-    app = create_app(settings=Settings(openai_api_key=None), app_state=EmptyState())
+    app = create_app(app_state=EmptyState())
+    app.state.translation_service = type(
+        "FakeTranslationService",
+        (),
+        {
+            "translate_grant_detail": staticmethod(lambda detail, grant=None: detail),
+        },
+    )()
     app.state.grant_detail_service = MissingDetailService()
     app.state.live_grant_cache.store(
         "journey-123",
