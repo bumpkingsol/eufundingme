@@ -2,6 +2,8 @@
 
 Find EU funding for your company in 30 seconds.
 
+**🚀 Try it now at [fundingme.eu](https://fundingme.eu)** or run it locally.
+
 [![45-second demo](docs/videos/promo.gif)](https://github.com/bumpkingsol/eufundingme/releases/download/media-v1/promo.mp4)
 
 _Click the preview above for the full 1920×1080 MP4 with sound._
@@ -58,7 +60,13 @@ export INDEX_REFRESH_STALL_SECONDS=60
 export DEMO_PROFILES_PATH=...
 ```
 
-## Run
+## Use It
+
+The hosted version is live at **[fundingme.eu](https://fundingme.eu)**. No setup needed.
+
+## Run Locally
+
+Prefer to self-host or develop? Run it yourself:
 
 ```bash
 python3 -m venv .venv
