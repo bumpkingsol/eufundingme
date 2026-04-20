@@ -11,7 +11,7 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from .application_brief import ApplicationBriefService
-from .billing_client import build_billing_client
+from .billing_client import ArtifactAccessPayload, BillingServiceError, build_billing_client
 from .config import Settings, load_settings
 from .ec_client import ECSearchClient
 from .embeddings import EmbeddingService, build_grant_embeddings, embedding_shortlist, lexical_shortlist
@@ -520,13 +520,23 @@ def create_app(
             fingerprint=fingerprint,
             company_description=payload.company_description,
             execution=execution,
-            request_id=request_id,
             now=reference_time,
         )
-        access = app.state.billing_client.get_artifact_access(
-            artifact_id=artifact.id,
-            fingerprint=artifact.fingerprint,
-        )
+        try:
+            access = app.state.billing_client.get_artifact_access(
+                artifact_id=artifact.id,
+                fingerprint=artifact.fingerprint,
+            )
+        except BillingServiceError as exc:
+            capture_backend_exception(
+                exc,
+                component="billing",
+                operation="get_artifact_access",
+                request_id=request_id,
+                fallback_used=True,
+                context={"artifact_id": artifact.id},
+            )
+            access = ArtifactAccessPayload(has_access=False, status="billing_unavailable")
         response = build_preview_match_response(
             artifact=artifact,
             access=access,

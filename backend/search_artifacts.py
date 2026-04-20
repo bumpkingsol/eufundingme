@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -54,17 +54,26 @@ class SearchArtifactStore:
     def __init__(self) -> None:
         self._artifacts: dict[str, SearchArtifact] = {}
 
+    def _prune_expired(self, *, now: datetime) -> None:
+        expired_ids = [
+            artifact_id
+            for artifact_id, artifact in self._artifacts.items()
+            if artifact.expires_at <= now
+        ]
+        for artifact_id in expired_ids:
+            self._artifacts.pop(artifact_id, None)
+
     def create(
         self,
         *,
         fingerprint: str,
         company_description: str,
         full_results: list[MatchResult],
-        request_id: str | None = None,
         now: datetime | None = None,
         expires_in: timedelta | None = None,
     ) -> SearchArtifact:
         reference_time = now or datetime.now(timezone.utc)
+        self._prune_expired(now=reference_time)
         ttl = expires_in or timedelta(days=7)
         preview_result = full_results[0] if full_results else None
         locked_results = list(full_results[1:]) if len(full_results) > 1 else []
@@ -77,7 +86,6 @@ class SearchArtifactStore:
             created_at=reference_time,
             expires_at=reference_time + ttl,
         )
-        _ = request_id
         self._artifacts[artifact.id] = artifact
         return artifact
 
@@ -87,7 +95,6 @@ class SearchArtifactStore:
         fingerprint: str,
         company_description: str,
         execution,
-        request_id: str | None = None,
         now: datetime | None = None,
         expires_in: timedelta | None = None,
     ) -> SearchArtifact:
@@ -95,11 +102,11 @@ class SearchArtifactStore:
             fingerprint=fingerprint,
             company_description=company_description,
             full_results=list(execution.match_response.results),
-            request_id=request_id,
             now=now,
             expires_in=expires_in,
         )
 
-    def get(self, artifact_id: str) -> SearchArtifact | None:
+    def get(self, artifact_id: str, *, now: datetime | None = None) -> SearchArtifact | None:
+        reference_time = now or datetime.now(timezone.utc)
+        self._prune_expired(now=reference_time)
         return self._artifacts.get(artifact_id)
-

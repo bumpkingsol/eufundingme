@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from backend.app import build_match_service, create_app
+from backend.billing_client import BillingServiceError
 from backend.config import Settings
 from backend.live_grants import LiveGrantRetrievalResult
 from backend.models import (
@@ -476,7 +477,107 @@ def test_match_endpoint_returns_preview_and_locked_teasers():
     assert payload["access_state"] == "preview"
     assert len(payload["results"]) == 1
     assert payload["results"][0]["grant_id"] == "TOPIC-1"
+    assert {result["grant_id"] for result in payload["results"]} == {"TOPIC-1"}
+    assert "TOPIC-2" not in {result["grant_id"] for result in payload["results"]}
+    assert "TOPIC-3" not in {result["grant_id"] for result in payload["results"]}
     assert len(payload["locked_result_teasers"]) == 2
+    teaser = payload["locked_result_teasers"][0]
+    assert teaser["grant_id"] == "TOPIC-2"
+    assert teaser["title"] == "Climate Grant"
+    assert teaser["fit_score_band"] == "strong"
+    assert "why_match" not in teaser
+    assert "application_angle" not in teaser
+    assert "portal_url" not in teaser
+
+
+def test_match_endpoint_fails_open_when_billing_access_lookup_errors():
+    class FakeState:
+        def ensure_indexing_started(self) -> None:
+            return None
+
+        def get_status(self) -> IndexStatus:
+            return IndexStatus(
+                phase="ready",
+                message="Ready",
+                indexed_grants=2,
+                scanned_prefixes=1,
+                total_prefixes=1,
+                failed_prefixes=0,
+                truncated_prefixes=0,
+                embeddings_ready=True,
+                degraded=False,
+                coverage_complete=True,
+                matching_available=True,
+                degradation_reasons=[],
+            )
+
+        def get_grants(self) -> list[object]:
+            return ["placeholder"]
+
+    class FakeMatchService:
+        def match(
+            self,
+            company_description: str,
+            grants: list[object],
+            now=None,
+            limit: int = 10,
+            base_degradation_reasons=None,
+        ) -> MatchResponse:
+            return MatchResponse(
+                indexed_grants=2,
+                degraded=False,
+                degradation_reasons=[],
+                results=[
+                    MatchResult(
+                        grant_id="TOPIC-1",
+                        title="AI Safety Grant",
+                        status="Open",
+                        deadline="2026-08-01",
+                        days_left=105,
+                        budget="EUR 6.2M",
+                        portal_url="https://example.com/TOPIC-1",
+                        fit_score=92,
+                        why_match="Strong overlap in AI safety deployment.",
+                        application_angle="Lead with trusted deployment across Europe.",
+                        framework_programme="Horizon Europe",
+                        programme_division="Cluster 4",
+                        keywords=["ai", "safety"],
+                    ),
+                    MatchResult(
+                        grant_id="TOPIC-2",
+                        title="Climate Grant",
+                        status="Open",
+                        deadline="2026-08-15",
+                        days_left=119,
+                        budget="EUR 3.0M",
+                        portal_url="https://example.com/TOPIC-2",
+                        fit_score=84,
+                        why_match="Strong fit on climate tooling.",
+                        application_angle="Lead with measurable emissions impact.",
+                        framework_programme="Horizon Europe",
+                        programme_division="Cluster 5",
+                        keywords=["climate"],
+                    ),
+                ],
+            )
+
+    class FailingBillingClient:
+        def get_artifact_access(self, *, artifact_id: str, email: str | None = None, fingerprint: str | None = None):
+            raise BillingServiceError("billing service request failed")
+
+    app = create_app(app_state=FakeState(), match_service=FakeMatchService())
+    app.state.billing_client = FailingBillingClient()
+    client = TestClient(app)
+
+    response = client.post("/api/match", json={"company_description": "We build AI tools across Europe."})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["access_state"] == "preview"
+    assert payload["preview_result"]["grant_id"] == "TOPIC-1"
+    assert len(payload["results"]) == 1
+    assert payload["results"][0]["grant_id"] == "TOPIC-1"
+    assert payload["locked_result_count"] == 1
 
 
 def test_match_endpoint_returns_translated_non_english_results():
