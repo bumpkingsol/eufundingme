@@ -80,6 +80,8 @@ If the billing service is not configured or is temporarily unavailable, `/api/ma
 
 The real Stripe infrastructure, customer state, webhook handling, and pricing logic intentionally live outside this open-source repo.
 
+See `docs/superpowers/specs/private-billing-service-contract.md` for the private-service boundary this public app expects.
+
 ## Use It
 
 The hosted version is live at **[fundingme.eu](https://fundingme.eu)**. No setup needed.
