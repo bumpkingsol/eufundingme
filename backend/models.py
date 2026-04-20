@@ -256,8 +256,56 @@ class ApplicationBriefSections(BaseModel):
 
 class ApplicationBriefRequest(BaseModel):
     company_description: str = Field(min_length=20, max_length=5000)
+    artifact_id: str | None = None
     match_result: MatchResult
     grant_detail: GrantDetailResponse
+
+
+class GuestCheckoutRequest(BaseModel):
+    artifact_id: str = Field(min_length=1)
+    fingerprint: str = Field(min_length=1)
+    email: str = Field(min_length=1)
+
+
+class GuestCheckoutResponse(BaseModel):
+    checkout_url: str
+
+
+class SubscriptionCheckoutRequest(BaseModel):
+    email: str = Field(min_length=1)
+    success_url: str | None = None
+    cancel_url: str | None = None
+
+
+class SubscriptionCheckoutResponse(BaseModel):
+    checkout_url: str
+
+
+class ArtifactAccessResponse(BaseModel):
+    artifact_id: str
+    has_access: bool
+    status: str
+    expires_at: str | None = None
+    access_state: MatchAccessState = MatchAccessState.PREVIEW
+
+
+class CreditUnlockRequest(BaseModel):
+    email: str = Field(min_length=1)
+    fingerprint: str | None = None
+
+
+class CreditUnlockResponse(BaseModel):
+    artifact_id: str
+    consumed: bool
+    has_access: bool
+    status: str
+    expires_at: str | None = None
+    access_state: MatchAccessState = MatchAccessState.PREVIEW
+
+
+class AccountDashboardResponse(BaseModel):
+    credits_remaining: int | None = None
+    dashboard_url: str | None = None
 
 
 class ApplicationBriefResponse(BaseModel):
