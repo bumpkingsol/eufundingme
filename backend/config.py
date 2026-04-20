@@ -35,6 +35,10 @@ class Settings:
     sentry_send_default_pii: bool = False
     sentry_enable_in_tests: bool = False
     sentry_debug_endpoint_enabled: bool = False
+    billing_enabled: bool = False
+    billing_service_base_url: str | None = None
+    billing_service_shared_token: str | None = None
+    billing_timeout_seconds: float = 5.0
     ec_page_size: int = 100
     ec_max_pages_per_prefix: int | None = None
     shortlist_limit: int = 10
@@ -117,6 +121,8 @@ def _resolve_sentry_release(*, dotenv_values: dict[str, str]) -> str | None:
 def load_settings() -> Settings:
     dotenv_values = _load_dotenv_values()
     raw_max_pages = _env("EC_MAX_PAGES_PER_PREFIX", dotenv_values=dotenv_values)
+    billing_service_base_url = _env("BILLING_SERVICE_BASE_URL", dotenv_values=dotenv_values)
+    billing_service_shared_token = _env("BILLING_SERVICE_SHARED_TOKEN", dotenv_values=dotenv_values)
     default_snapshot_path = Path(__file__).resolve().parent.parent / ".cache" / "grant-index.json"
     default_seed_snapshot_path = Path(__file__).resolve().parent / "data" / "grant-index.seed.json"
     return Settings(
@@ -167,6 +173,12 @@ def load_settings() -> Settings:
             _env("SENTRY_DEBUG_ENDPOINT_ENABLED", "false", dotenv_values=dotenv_values) or "false"
         ).lower()
         == "true",
+        billing_enabled=bool(billing_service_base_url and billing_service_shared_token),
+        billing_service_base_url=billing_service_base_url,
+        billing_service_shared_token=billing_service_shared_token,
+        billing_timeout_seconds=float(
+            _env("BILLING_TIMEOUT_SECONDS", "5", dotenv_values=dotenv_values) or "5"
+        ),
         ec_page_size=int(_env("EC_PAGE_SIZE", "100", dotenv_values=dotenv_values) or "100"),
         ec_max_pages_per_prefix=int(raw_max_pages) if raw_max_pages else None,
         shortlist_limit=int(_env("SHORTLIST_LIMIT", "10", dotenv_values=dotenv_values) or "10"),

@@ -10,6 +10,7 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from .application_brief import ApplicationBriefService
+from .billing_client import build_billing_client
 from .config import Settings, load_settings
 from .ec_client import ECSearchClient
 from .embeddings import EmbeddingService, build_grant_embeddings, embedding_shortlist, lexical_shortlist
@@ -210,6 +211,7 @@ def create_app(
     app = FastAPI(title="EU Grant Matcher", lifespan=lifespan)
     app.state.settings = active_settings
     app.state.app_state = app_state
+    app.state.billing_client = build_billing_client(active_settings)
     app.state.match_service = match_service or build_match_service(active_settings, app_state)
     openai_client = build_openai_client(active_settings)
     app.state.translation_service = translation_service or GrantTranslationService(
