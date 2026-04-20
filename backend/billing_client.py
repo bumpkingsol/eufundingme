@@ -12,6 +12,18 @@ class BillingServiceError(RuntimeError):
     pass
 
 
+class BillingServiceUnavailableError(BillingServiceError):
+    pass
+
+
+class BillingUnauthorizedError(BillingServiceError):
+    pass
+
+
+class BillingForbiddenError(BillingServiceError):
+    pass
+
+
 @dataclass(slots=True)
 class CheckoutSessionPayload:
     checkout_url: str
@@ -47,14 +59,14 @@ class BillingClient(Protocol):
         *,
         artifact_id: str,
         fingerprint: str,
-        email: str,
+        email: str | None,
         account_context: AccountContextLike | None = None,
     ) -> CheckoutSessionPayload: ...
 
     def create_subscription_checkout(
         self,
         *,
-        email: str,
+        email: str | None,
         success_url: str | None = None,
         cancel_url: str | None = None,
         account_context: AccountContextLike | None = None,
@@ -73,7 +85,7 @@ class BillingClient(Protocol):
         self,
         *,
         artifact_id: str,
-        email: str,
+        email: str | None,
         fingerprint: str | None = None,
         account_context: AccountContextLike | None = None,
     ) -> CreditUnlockPayload: ...
@@ -81,7 +93,7 @@ class BillingClient(Protocol):
     def get_account_dashboard(
         self,
         *,
-        email: str,
+        email: str | None,
         account_context: AccountContextLike | None = None,
     ) -> AccountDashboardPayload: ...
 
@@ -95,7 +107,7 @@ class StubBillingClient:
         email: str,
         account_context: AccountContextLike | None = None,
     ) -> CheckoutSessionPayload:
-        raise BillingServiceError("billing service unavailable")
+        raise BillingServiceUnavailableError("billing service unavailable")
 
     def create_subscription_checkout(
         self,
@@ -105,7 +117,7 @@ class StubBillingClient:
         cancel_url: str | None = None,
         account_context: AccountContextLike | None = None,
     ) -> CheckoutSessionPayload:
-        raise BillingServiceError("billing service unavailable")
+        raise BillingServiceUnavailableError("billing service unavailable")
 
     def get_artifact_access(
         self,
@@ -125,7 +137,7 @@ class StubBillingClient:
         fingerprint: str | None = None,
         account_context: AccountContextLike | None = None,
     ) -> CreditUnlockPayload:
-        raise BillingServiceError("billing service unavailable")
+        raise BillingServiceUnavailableError("billing service unavailable")
 
     def get_account_dashboard(
         self,
@@ -133,7 +145,7 @@ class StubBillingClient:
         email: str,
         account_context: AccountContextLike | None = None,
     ) -> AccountDashboardPayload:
-        raise BillingServiceError("billing service unavailable")
+        raise BillingServiceUnavailableError("billing service unavailable")
 
 
 class HttpBillingClient:
@@ -159,13 +171,26 @@ class HttpBillingClient:
         headers: dict[str, str] = {}
         if account_context is None:
             return headers
-        if getattr(account_context, "session_token", None):
-            headers["X-Account-Session"] = account_context.session_token or ""
+        session_token = getattr(account_context, "session_token", None)
+        if session_token:
+            headers["X-Account-Session"] = session_token
+            return headers
         if getattr(account_context, "email_hint", None):
             headers["X-Account-Email"] = account_context.email_hint or ""
         if getattr(account_context, "fingerprint_hint", None):
             headers["X-Artifact-Fingerprint"] = account_context.fingerprint_hint or ""
         return headers
+
+    @staticmethod
+    def _sanitize_identity(
+        *,
+        account_context: AccountContextLike | None,
+        email: str | None = None,
+        fingerprint: str | None = None,
+    ) -> tuple[str | None, str | None]:
+        if account_context is not None and getattr(account_context, "session_token", None):
+            return None, None
+        return email, fingerprint
 
     @staticmethod
     def _require_object(payload: object, *, context: str) -> dict[str, object]:
@@ -224,6 +249,10 @@ class HttpBillingClient:
                 params=self._compact_values(params or {}),
                 timeout=self.timeout_seconds,
             )
+            if response.status_code == 401:
+                raise BillingUnauthorizedError("billing service unauthorized")
+            if response.status_code == 403:
+                raise BillingForbiddenError("billing service forbidden")
             response.raise_for_status()
             payload = response.json()
         except (requests.RequestException, ValueError, TypeError) as exc:
@@ -236,17 +265,23 @@ class HttpBillingClient:
         *,
         artifact_id: str,
         fingerprint: str,
-        email: str,
+        email: str | None,
         account_context: AccountContextLike | None = None,
     ) -> CheckoutSessionPayload:
+        email, fingerprint = self._sanitize_identity(
+            account_context=account_context,
+            email=email,
+            fingerprint=fingerprint,
+        )
+        json_payload: dict[str, object | None] = {"artifact_id": artifact_id}
+        if email is not None:
+            json_payload["email"] = email
+        if fingerprint is not None:
+            json_payload["fingerprint"] = fingerprint
         payload = self._request(
             "POST",
             "/v1/checkout/guest-unlock",
-            json={
-                "artifact_id": artifact_id,
-                "fingerprint": fingerprint,
-                "email": email,
-            },
+            json=json_payload,
             account_context=account_context,
         )
         checkout_url = self._require_str(payload, "checkout_url", context="guest unlock checkout")
@@ -255,19 +290,22 @@ class HttpBillingClient:
     def create_subscription_checkout(
         self,
         *,
-        email: str,
+        email: str | None,
         success_url: str | None = None,
         cancel_url: str | None = None,
         account_context: AccountContextLike | None = None,
     ) -> CheckoutSessionPayload:
+        email, _ = self._sanitize_identity(account_context=account_context, email=email)
+        json_payload: dict[str, object | None] = {
+            "success_url": success_url,
+            "cancel_url": cancel_url,
+        }
+        if email is not None:
+            json_payload["email"] = email
         payload = self._request(
             "POST",
             "/v1/checkout/subscription",
-            json={
-                "email": email,
-                "success_url": success_url,
-                "cancel_url": cancel_url,
-            },
+            json=json_payload,
             account_context=account_context,
         )
         checkout_url = self._require_str(payload, "checkout_url", context="subscription checkout")
@@ -281,6 +319,11 @@ class HttpBillingClient:
         fingerprint: str | None = None,
         account_context: AccountContextLike | None = None,
     ) -> ArtifactAccessPayload:
+        email, fingerprint = self._sanitize_identity(
+            account_context=account_context,
+            email=email,
+            fingerprint=fingerprint,
+        )
         payload = self._request(
             "GET",
             f"/v1/artifacts/{artifact_id}/access",
@@ -300,18 +343,24 @@ class HttpBillingClient:
         self,
         *,
         artifact_id: str,
-        email: str,
+        email: str | None,
         fingerprint: str | None = None,
         account_context: AccountContextLike | None = None,
     ) -> CreditUnlockPayload:
+        email, fingerprint = self._sanitize_identity(
+            account_context=account_context,
+            email=email,
+            fingerprint=fingerprint,
+        )
+        json_payload: dict[str, object | None] = {"artifact_id": artifact_id}
+        if email is not None:
+            json_payload["email"] = email
+        if fingerprint is not None:
+            json_payload["fingerprint"] = fingerprint
         payload = self._request(
             "POST",
             "/v1/credits/consume",
-            json={
-                "artifact_id": artifact_id,
-                "email": email,
-                "fingerprint": fingerprint,
-            },
+            json=json_payload,
             account_context=account_context,
         )
         return CreditUnlockPayload(consumed=self._require_bool(payload, "consumed", context="credit unlock"))
@@ -319,13 +368,17 @@ class HttpBillingClient:
     def get_account_dashboard(
         self,
         *,
-        email: str,
+        email: str | None,
         account_context: AccountContextLike | None = None,
     ) -> AccountDashboardPayload:
+        email, _ = self._sanitize_identity(account_context=account_context, email=email)
+        params: dict[str, object | None] = {}
+        if email is not None:
+            params["email"] = email
         payload = self._request(
             "GET",
             "/v1/account/dashboard",
-            params={"email": email},
+            params=params,
             account_context=account_context,
         )
         return AccountDashboardPayload(

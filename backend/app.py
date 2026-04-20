@@ -11,8 +11,19 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from .application_brief import ApplicationBriefService
-from .access_control import require_artifact_access, resolve_account_context
-from .billing_client import ArtifactAccessPayload, BillingServiceError, build_billing_client
+from .access_control import (
+    http_exception_for_billing_error,
+    require_artifact_access,
+    resolve_account_context,
+    resolve_billing_identity,
+)
+from .billing_client import (
+    ArtifactAccessPayload,
+    BillingForbiddenError,
+    BillingServiceError,
+    BillingUnauthorizedError,
+    build_billing_client,
+)
 from .config import Settings, load_settings
 from .ec_client import ECSearchClient
 from .embeddings import EmbeddingService, build_grant_embeddings, embedding_shortlist, lexical_shortlist
@@ -106,6 +117,15 @@ def _artifact_access_response(artifact_id: str, access) -> ArtifactAccessRespons
         expires_at=getattr(access, "expires_at", None),
         access_state=_access_state_for_response(access),
     )
+
+
+def _identity_for_request(
+    account_context,
+    *,
+    email: str | None = None,
+    fingerprint: str | None = None,
+) -> tuple[str | None, str | None]:
+    return resolve_billing_identity(account_context, email=email, fingerprint=fingerprint)
 
 
 def build_preview_match_response(
@@ -584,12 +604,19 @@ def create_app(
             model=active_settings.openai_match_model if active_settings.openai_api_key else None,
         )
         try:
+            email, fingerprint = _identity_for_request(
+                account_context,
+                email=payload.email,
+                fingerprint=payload.fingerprint,
+            )
             session = app.state.billing_client.create_guest_unlock_checkout(
                 artifact_id=payload.artifact_id,
-                fingerprint=payload.fingerprint,
-                email=payload.email,
+                fingerprint=fingerprint,
+                email=email,
                 account_context=account_context,
             )
+        except (BillingUnauthorizedError, BillingForbiddenError) as exc:
+            raise http_exception_for_billing_error(exc) from exc
         except BillingServiceError as exc:
             capture_backend_exception(
                 exc,
@@ -616,12 +643,15 @@ def create_app(
             model=active_settings.openai_match_model if active_settings.openai_api_key else None,
         )
         try:
+            email, fingerprint = _identity_for_request(account_context, email=payload.email)
             session = app.state.billing_client.create_subscription_checkout(
-                email=payload.email,
+                email=email,
                 success_url=payload.success_url,
                 cancel_url=payload.cancel_url,
                 account_context=account_context,
             )
+        except (BillingUnauthorizedError, BillingForbiddenError) as exc:
+            raise http_exception_for_billing_error(exc) from exc
         except BillingServiceError as exc:
             capture_backend_exception(
                 exc,
@@ -650,12 +680,19 @@ def create_app(
             model=active_settings.openai_match_model if active_settings.openai_api_key else None,
         )
         try:
+            email, fingerprint = _identity_for_request(
+                account_context,
+                email=email,
+                fingerprint=fingerprint,
+            )
             access = app.state.billing_client.get_artifact_access(
                 artifact_id=artifact_id,
                 email=email,
                 fingerprint=fingerprint,
                 account_context=account_context,
             )
+        except (BillingUnauthorizedError, BillingForbiddenError) as exc:
+            raise http_exception_for_billing_error(exc) from exc
         except BillingServiceError as exc:
             capture_backend_exception(
                 exc,
@@ -683,18 +720,25 @@ def create_app(
             model=active_settings.openai_match_model if active_settings.openai_api_key else None,
         )
         try:
-            consumed = app.state.billing_client.consume_credit_unlock(
-                artifact_id=artifact_id,
+            email, fingerprint = _identity_for_request(
+                account_context,
                 email=payload.email,
                 fingerprint=payload.fingerprint,
+            )
+            consumed = app.state.billing_client.consume_credit_unlock(
+                artifact_id=artifact_id,
+                email=email,
+                fingerprint=fingerprint,
                 account_context=account_context,
             )
             access = app.state.billing_client.get_artifact_access(
                 artifact_id=artifact_id,
-                email=payload.email,
-                fingerprint=payload.fingerprint,
+                email=email,
+                fingerprint=fingerprint,
                 account_context=account_context,
             )
+        except (BillingUnauthorizedError, BillingForbiddenError) as exc:
+            raise http_exception_for_billing_error(exc) from exc
         except BillingServiceError as exc:
             capture_backend_exception(
                 exc,
@@ -728,10 +772,13 @@ def create_app(
             model=active_settings.openai_match_model if active_settings.openai_api_key else None,
         )
         try:
+            email_hint, _ = _identity_for_request(account_context, email=email)
             dashboard = app.state.billing_client.get_account_dashboard(
-                email=email,
+                email=email_hint,
                 account_context=account_context,
             )
+        except (BillingUnauthorizedError, BillingForbiddenError) as exc:
+            raise http_exception_for_billing_error(exc) from exc
         except BillingServiceError as exc:
             capture_backend_exception(
                 exc,
@@ -789,6 +836,8 @@ def create_app(
             )
             sentry_sdk.set_measurement("application_brief_failed", 0.0)
             return response.model_copy(update={"request_id": request_id})
+        except (BillingUnauthorizedError, BillingForbiddenError) as exc:
+            raise http_exception_for_billing_error(exc) from exc
         except Exception as exc:
             sentry_sdk.set_measurement("application_brief_failed", 1.0)
             capture_backend_exception(

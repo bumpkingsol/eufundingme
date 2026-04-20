@@ -1191,16 +1191,14 @@ def test_guest_checkout_endpoint_returns_checkout_url():
             self,
             *,
             artifact_id: str,
-            fingerprint: str,
-            email: str,
+            fingerprint: str | None,
+            email: str | None,
             account_context=None,
         ):
             assert artifact_id == "artifact-1"
-            assert fingerprint == "fp-1"
-            assert email == "founder@example.com"
             assert account_context.session_token == "opaque-session"
-            assert account_context.email_hint == "founder@example.com"
-            assert account_context.fingerprint_hint == "fp-1"
+            assert email is None
+            assert fingerprint is None
             return CheckoutSessionPayload(checkout_url="https://checkout.example/guest")
 
     app = create_app()
@@ -1227,8 +1225,8 @@ def test_guest_checkout_endpoint_returns_503_when_billing_unavailable():
             self,
             *,
             artifact_id: str,
-            fingerprint: str,
-            email: str,
+            fingerprint: str | None,
+            email: str | None,
             account_context=None,
         ):
             raise BillingServiceError("billing service request failed")
@@ -1256,12 +1254,12 @@ def test_subscription_checkout_endpoint_returns_checkout_url_and_forwards_contex
         def create_subscription_checkout(
             self,
             *,
-            email: str,
+            email: str | None,
             success_url: str | None = None,
             cancel_url: str | None = None,
             account_context=None,
         ):
-            assert email == "founder@example.com"
+            assert email is None
             assert success_url == "https://example.com/success"
             assert cancel_url == "https://example.com/cancel"
             assert account_context.session_token == "opaque-session"
@@ -1290,7 +1288,7 @@ def test_subscription_checkout_endpoint_returns_503_when_billing_unavailable():
         def create_subscription_checkout(
             self,
             *,
-            email: str,
+            email: str | None,
             success_url: str | None = None,
             cancel_url: str | None = None,
             account_context=None,
@@ -1322,11 +1320,9 @@ def test_artifact_access_endpoint_reports_pending_unlock():
             account_context=None,
         ):
             assert artifact_id == "artifact-1"
-            assert email == "founder@example.com"
-            assert fingerprint == "fp-1"
             assert account_context.session_token == "opaque-session"
-            assert account_context.email_hint == "founder@example.com"
-            assert account_context.fingerprint_hint == "fp-1"
+            assert email is None
+            assert fingerprint is None
             return ArtifactAccessPayload(has_access=False, status="pending_unlock", expires_at="2026-04-20T00:00:00Z")
 
     app = create_app()
@@ -1382,14 +1378,14 @@ def test_credit_unlock_consumes_once_per_artifact():
             self,
             *,
             artifact_id: str,
-            email: str,
+            email: str | None,
             fingerprint: str | None = None,
             account_context=None,
         ):
             assert artifact_id == "artifact-1"
-            assert email == "founder@example.com"
-            assert fingerprint == "fp-1"
             assert account_context.session_token == "opaque-session"
+            assert email is None
+            assert fingerprint is None
             self.consume_calls += 1
             return CreditUnlockPayload(consumed=True)
 
@@ -1402,9 +1398,9 @@ def test_credit_unlock_consumes_once_per_artifact():
             account_context=None,
         ):
             assert artifact_id == "artifact-1"
-            assert email == "founder@example.com"
-            assert fingerprint == "fp-1"
             assert account_context.session_token == "opaque-session"
+            assert email is None
+            assert fingerprint is None
             return ArtifactAccessPayload(has_access=True, status="unlocked", expires_at="2026-04-27T00:00:00Z")
 
     billing_client = FakeBillingClient()
@@ -1430,8 +1426,8 @@ def test_credit_unlock_consumes_once_per_artifact():
 
 def test_account_dashboard_endpoint_returns_dashboard_payload():
     class FakeBillingClient:
-        def get_account_dashboard(self, *, email: str, account_context=None):
-            assert email == "founder@example.com"
+        def get_account_dashboard(self, *, email: str | None, account_context=None):
+            assert email is None
             assert account_context.session_token == "opaque-session"
             return type("Dashboard", (), {"credits_remaining": 7, "dashboard_url": "https://billing.example/account"})()
 
@@ -1454,7 +1450,7 @@ def test_account_dashboard_endpoint_returns_dashboard_payload():
 
 def test_account_dashboard_endpoint_returns_503_when_billing_unavailable():
     class FailingBillingClient:
-        def get_account_dashboard(self, *, email: str, account_context=None):
+        def get_account_dashboard(self, *, email: str | None, account_context=None):
             raise BillingServiceError("billing service request failed")
 
     app = create_app()
@@ -1715,6 +1711,62 @@ def test_application_brief_endpoint_binds_request_context_and_captures_failure(m
             "context": {"grant_id": "TOPIC-1"},
         },
     )]
+
+
+def test_application_brief_returns_401_when_billing_reports_unauthorized():
+    from backend.billing_client import BillingUnauthorizedError
+
+    class FakeBillingClient:
+        def get_artifact_access(
+            self,
+            *,
+            artifact_id: str,
+            email: str | None = None,
+            fingerprint: str | None = None,
+            account_context=None,
+        ):
+            raise BillingUnauthorizedError("billing service unauthorized")
+
+    app = create_app()
+    app.state.billing_client = FakeBillingClient()
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/application-brief",
+        headers={**account_context_headers(), "X-Request-ID": "journey-auth-401"},
+        json=locked_brief_payload(),
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"]["code"] == "BILLING_UNAUTHORIZED"
+
+
+def test_artifact_access_returns_403_when_billing_reports_forbidden():
+    from backend.billing_client import BillingForbiddenError
+
+    class FakeBillingClient:
+        def get_artifact_access(
+            self,
+            *,
+            artifact_id: str,
+            email: str | None = None,
+            fingerprint: str | None = None,
+            account_context=None,
+        ):
+            raise BillingForbiddenError("billing service forbidden")
+
+    app = create_app()
+    app.state.billing_client = FakeBillingClient()
+    client = TestClient(app)
+
+    response = client.get(
+        "/api/search-artifacts/artifact-1/access",
+        headers=account_context_headers(),
+        params={"email": "founder@example.com", "fingerprint": "fp-1"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "BILLING_FORBIDDEN"
 
 
 def test_grant_detail_endpoint_returns_normalized_payload():

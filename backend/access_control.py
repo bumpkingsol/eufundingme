@@ -5,7 +5,11 @@ from typing import Callable
 
 from fastapi import HTTPException, Request
 
-from .billing_client import BillingServiceError
+from .billing_client import (
+    BillingForbiddenError,
+    BillingServiceError,
+    BillingUnauthorizedError,
+)
 
 
 @dataclass(slots=True)
@@ -16,6 +20,25 @@ class AccountContext:
 
     def has_identity(self) -> bool:
         return any((self.session_token, self.email_hint, self.fingerprint_hint))
+
+
+def resolve_billing_identity(
+    account_context: AccountContext,
+    *,
+    email: str | None = None,
+    fingerprint: str | None = None,
+) -> tuple[str | None, str | None]:
+    if account_context.session_token:
+        return None, None
+    return email, fingerprint
+
+
+def http_exception_for_billing_error(exc: BillingServiceError) -> HTTPException:
+    if isinstance(exc, BillingUnauthorizedError):
+        return HTTPException(status_code=401, detail={"code": "BILLING_UNAUTHORIZED"})
+    if isinstance(exc, BillingForbiddenError):
+        return HTTPException(status_code=403, detail={"code": "BILLING_FORBIDDEN"})
+    return HTTPException(status_code=503, detail={"code": "BILLING_UNAVAILABLE"})
 
 
 def resolve_account_context(request: Request) -> AccountContext:
@@ -40,16 +63,25 @@ def require_artifact_access(
     on_billing_error: Callable[[BillingServiceError], None] | None = None,
 ):
     try:
-        decision = billing_client.get_artifact_access(
-            artifact_id=artifact_id,
-            account_context=account_context,
+        email, fingerprint = resolve_billing_identity(
+            account_context,
             email=account_context.email_hint,
             fingerprint=account_context.fingerprint_hint,
         )
+        decision = billing_client.get_artifact_access(
+            artifact_id=artifact_id,
+            account_context=account_context,
+            email=email,
+            fingerprint=fingerprint,
+        )
+    except BillingUnauthorizedError as exc:
+        raise HTTPException(status_code=401, detail={"code": "BILLING_UNAUTHORIZED"}) from exc
+    except BillingForbiddenError as exc:
+        raise HTTPException(status_code=403, detail={"code": "BILLING_FORBIDDEN"}) from exc
     except BillingServiceError as exc:
         if on_billing_error is not None:
             on_billing_error(exc)
-        raise HTTPException(status_code=503, detail={"code": "BILLING_UNAVAILABLE"}) from exc
+        raise http_exception_for_billing_error(exc) from exc
 
     if not getattr(decision, "has_access", False):
         raise HTTPException(status_code=403, detail={"code": "ARTIFACT_LOCKED"})

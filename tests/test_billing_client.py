@@ -6,7 +6,13 @@ import pytest
 import requests
 
 from backend.app import create_app
-from backend.billing_client import BillingServiceError, HttpBillingClient, StubBillingClient
+from backend.billing_client import (
+    BillingForbiddenError,
+    BillingServiceError,
+    BillingUnauthorizedError,
+    HttpBillingClient,
+    StubBillingClient,
+)
 from backend.config import Settings
 
 
@@ -118,13 +124,9 @@ def test_http_billing_client_sends_shared_auth_header_and_account_context(httpx_
     assert payload.checkout_url == "https://checkout.stripe.com/test"
     assert httpx_mock.calls[0]["headers"]["Authorization"] == "Bearer secret-token"
     assert httpx_mock.calls[0]["headers"]["X-Account-Session"] == "opaque-session"
-    assert httpx_mock.calls[0]["headers"]["X-Account-Email"] == "founder@example.com"
-    assert httpx_mock.calls[0]["headers"]["X-Artifact-Fingerprint"] == "fp-1"
-    assert httpx_mock.calls[0]["json"] == {
-        "artifact_id": "artifact-1",
-        "fingerprint": "fp-1",
-        "email": "founder@example.com",
-    }
+    assert "X-Account-Email" not in httpx_mock.calls[0]["headers"]
+    assert "X-Artifact-Fingerprint" not in httpx_mock.calls[0]["headers"]
+    assert httpx_mock.calls[0]["json"] == {"artifact_id": "artifact-1"}
 
 
 @pytest.mark.parametrize(
@@ -274,6 +276,35 @@ def test_http_billing_client_normalizes_transport_and_parsing_failures(httpx_moc
             artifact_id="artifact-1",
             fingerprint="fp-1",
             email="founder@example.com",
+        )
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected_exception"),
+    [
+        (401, BillingUnauthorizedError),
+        (403, BillingForbiddenError),
+    ],
+)
+def test_http_billing_client_raises_auth_specific_errors(httpx_mock, status_code, expected_exception):
+    client = HttpBillingClient(
+        base_url="https://billing.internal",
+        shared_token="secret-token",
+        timeout_seconds=5.0,
+    )
+
+    httpx_mock.add_response(
+        method="GET",
+        url="https://billing.internal/v1/artifacts/artifact-1/access",
+        status_code=status_code,
+        json={"has_access": False, "status": "forbidden"},
+    )
+
+    with pytest.raises(expected_exception):
+        client.get_artifact_access(
+            artifact_id="artifact-1",
+            email="founder@example.com",
+            account_context=_AccountContext(session_token="opaque-session"),
         )
 
 
