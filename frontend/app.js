@@ -45,6 +45,24 @@ const comparisonTable = document.querySelector("#comparison-table");
 const alertForm = document.querySelector("#alert-form");
 const alertEmail = document.querySelector("#alert-email");
 const alertStatus = document.querySelector("#alert-status");
+const billingPanel = document.querySelector("#billing-panel");
+const lockedResultsSummary = document.querySelector("#locked-results-summary");
+const pendingUnlockStatus = document.querySelector("#pending-unlock-status");
+const billingMessage = document.querySelector("#billing-message");
+const unlockCtaArea = document.querySelector("#unlock-cta-area");
+const billingEmailInput = document.querySelector("#billing-email");
+const guestCheckoutButton = document.querySelector("#guest-checkout-button");
+const subscriptionCheckoutButton = document.querySelector("#subscription-checkout-button");
+const creditUnlockButton = document.querySelector("#credit-unlock-button");
+const refreshAccessButton = document.querySelector("#refresh-access-button");
+const accountDashboardSummary = document.querySelector("#account-dashboard-summary");
+const dashboardEmailInput = document.querySelector("#dashboard-email");
+const dashboardLoadButton = document.querySelector("#dashboard-load-button");
+const dashboardMessage = document.querySelector("#dashboard-message");
+const accountDashboardPanel = document.querySelector("#account-dashboard-panel");
+const dashboardCreditsRemaining = document.querySelector("#dashboard-credits-remaining");
+const dashboardManageLink = document.querySelector("#dashboard-manage-link");
+const dashboardManageEmpty = document.querySelector("#dashboard-manage-empty");
 
 let latestStatus = null;
 let latestResults = [];
@@ -58,6 +76,7 @@ let latestResolveToken = 0;
 let currentJourneyRequestId = null;
 let currentJourneySeed = null;
 let latestMatchMeta = null;
+let unlockPollHandle = null;
 const resultsById = new Map();
 const grantDetailsById = new Map();
 const loadingGrantIds = new Set();
@@ -224,6 +243,103 @@ function setResultsBusy(isBusy) {
   }
 }
 
+function setBillingMessage(message = "", tone = "info") {
+  if (!billingMessage) {
+    return;
+  }
+  if (!message) {
+    billingMessage.hidden = true;
+    billingMessage.textContent = "";
+    billingMessage.classList.remove("is-error");
+    return;
+  }
+  billingMessage.hidden = false;
+  billingMessage.textContent = message;
+  billingMessage.classList.toggle("is-error", tone === "error");
+}
+
+function setPendingUnlockMessage(message = "") {
+  if (!pendingUnlockStatus) {
+    return;
+  }
+  pendingUnlockStatus.hidden = !message;
+  pendingUnlockStatus.textContent = message;
+}
+
+function clearUnlockPoll() {
+  if (unlockPollHandle !== null) {
+    window.clearTimeout(unlockPollHandle);
+    unlockPollHandle = null;
+  }
+}
+
+function hideBillingPanel() {
+  clearUnlockPoll();
+  if (billingPanel) {
+    billingPanel.hidden = true;
+  }
+  setPendingUnlockMessage("");
+  setBillingMessage("");
+}
+
+function showBillingPanel() {
+  if (billingPanel) {
+    billingPanel.hidden = false;
+  }
+}
+
+function getBillingEmailValue() {
+  return billingEmailInput?.value?.trim() || dashboardEmailInput?.value?.trim() || "";
+}
+
+function syncBillingEmailInputs(value) {
+  if (billingEmailInput && value && !billingEmailInput.value.trim()) {
+    billingEmailInput.value = value;
+  }
+  if (dashboardEmailInput && value && !dashboardEmailInput.value.trim()) {
+    dashboardEmailInput.value = value;
+  }
+}
+
+function normalizeFingerprintSource() {
+  return descriptionInput?.value?.trim() || "";
+}
+
+async function computeSearchFingerprint() {
+  const normalized = normalizeFingerprintSource().trim().replace(/\s+/g, " ").toLowerCase();
+  if (!normalized) {
+    return "";
+  }
+  if (globalThis.crypto?.subtle && globalThis.TextEncoder) {
+    const data = new TextEncoder().encode(normalized);
+    const digest = await globalThis.crypto.subtle.digest("SHA-256", data);
+    return Array.from(new Uint8Array(digest))
+      .map((value) => value.toString(16).padStart(2, "0"))
+      .join("");
+  }
+  return normalized;
+}
+
+function setBillingActionsDisabled(isDisabled) {
+  guestCheckoutButton && (guestCheckoutButton.disabled = isDisabled);
+  subscriptionCheckoutButton && (subscriptionCheckoutButton.disabled = isDisabled);
+  creditUnlockButton && (creditUnlockButton.disabled = isDisabled);
+  refreshAccessButton && (refreshAccessButton.disabled = isDisabled);
+}
+
+function redirectToUrl(url) {
+  if (!url) {
+    return;
+  }
+  if (window.location && typeof window.location.assign === "function") {
+    window.location.assign(url);
+    return;
+  }
+  if (window.location) {
+    window.location.href = url;
+  }
+}
+
 function buildEmptyStateMarkup({ variant = "intro", title, copy, bullets = [] }) {
   const bulletMarkup = bullets.length
     ? `<ul class="results-empty-list">${bullets.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
@@ -247,6 +363,7 @@ function showResultsEmptyState(config) {
 
 function showIntroResultsState(message = DEFAULT_EMPTY_STATE, meta = "No search run yet.") {
   latestMatchMeta = null;
+  hideBillingPanel();
   updateDocumentTitle();
   setResultsBusy(false);
   showResultsEmptyState({
@@ -262,6 +379,7 @@ function showIntroResultsState(message = DEFAULT_EMPTY_STATE, meta = "No search 
 }
 
 function showLoadingResultsState() {
+  hideBillingPanel();
   setResultsBusy(true);
   showResultsEmptyState({
     variant: "loading",
@@ -277,6 +395,7 @@ function showLoadingResultsState() {
 
 function showMatchFeedback(message) {
   latestMatchMeta = null;
+  hideBillingPanel();
   hideResolutionBanner();
   updateDocumentTitle();
   setResultsBusy(false);
@@ -541,6 +660,137 @@ function renderComparisonPanel() {
   comparisonTable.innerHTML = columns;
 }
 
+function getFitScoreBand(fitScore) {
+  if (fitScore >= 70) {
+    return "High fit";
+  }
+  if (fitScore >= 40) {
+    return "Medium fit";
+  }
+  return "Early fit";
+}
+
+function buildResultCard(result, index, { preview = false, artifactUnlocked = true } = {}) {
+  const keywords = (result.keywords || [])
+    .map((keyword) => `<span class="keyword-pill">${escapeHtml(keyword)}</span>`)
+    .join("");
+
+  const meta = [
+    preview && `<span class="meta-pill meta-pill--preview">Preview result</span>`,
+    result.framework_programme && `<span class="meta-pill">${escapeHtml(result.framework_programme)}</span>`,
+    result.programme_division && `<span class="meta-pill">${escapeHtml(result.programme_division)}</span>`,
+    result.deadline && `<span class="meta-pill">Deadline ${escapeHtml(result.deadline)}</span>`,
+    result.budget && `<span class="meta-pill">${escapeHtml(result.budget)}</span>`,
+  ]
+    .filter(Boolean)
+    .join("");
+  const translationNote =
+    result.translated_from_source && result.translation_note
+      ? `<p class="translation-note">${escapeHtml(result.translation_note)}</p>`
+      : "";
+
+  return `
+    <article class="result-card${preview ? " result-card--preview" : ""}" style="animation-delay: ${index * 70}ms">
+      <div class="result-head">
+        <div class="result-head-main">
+          <h3>${escapeHtml(result.title)}</h3>
+          <div class="meta-row">
+            ${meta}
+            ${urgencyMarkup(result.days_left)}
+          </div>
+        </div>
+        <div class="result-head-side">
+          <div class="score-wrap">
+            <span class="score-label">Fit score</span>
+            <span class="${getScoreChipClass(result.fit_score)}">${escapeHtml(result.fit_score)} / 100</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="result-copy">
+        ${translationNote}
+        <div class="copy-block">
+          <strong>Why this matches</strong>
+          <span>${escapeHtml(result.why_match)}</span>
+        </div>
+        <div class="copy-block">
+          <strong>Application angle</strong>
+          <span>${escapeHtml(result.application_angle)}</span>
+        </div>
+      </div>
+
+      <div class="keyword-row">${keywords}</div>
+
+      <div class="meta-row result-links result-actions">
+        <button class="secondary-button" type="button" onclick="toggleGrantDetails('${escapeHtml(result.grant_id)}')">
+          ${expandedGrantIds.has(result.grant_id) ? "Hide details" : "View details"}
+        </button>
+        ${artifactUnlocked ? `<button class="secondary-button" type="button" onclick="toggleComparisonGrant('${escapeHtml(result.grant_id)}')">
+          ${comparisonGrantIds.includes(result.grant_id) ? "Remove favorite" : "Add to favorites"}
+        </button>` : ""}
+        <button class="export-button" type="button" onclick="exportApplicationBrief('${escapeHtml(result.grant_id)}')" ${
+          artifactUnlocked ? "" : 'disabled aria-disabled="true"'
+        }>${artifactUnlocked ? "Export application brief" : "Export brief (locked)"}</button>
+        <a href="${escapeHtml(result.portal_url)}" target="_blank" rel="noreferrer">Open EC portal</a>
+      </div>
+
+      ${renderGrantDetail(result)}
+    </article>
+  `;
+}
+
+function buildLockedTeaserCard(teaser, index) {
+  const teaserMeta = [
+    teaser.fit_score_band && `<span class="meta-pill">${escapeHtml(teaser.fit_score_band)}</span>`,
+    teaser.deadline && `<span class="meta-pill">Deadline ${escapeHtml(teaser.deadline)}</span>`,
+    teaser.budget && `<span class="meta-pill">${escapeHtml(teaser.budget)}</span>`,
+  ]
+    .filter(Boolean)
+    .join("");
+
+  return `
+    <article class="result-card result-card--locked" style="animation-delay: ${(index + 1) * 70}ms">
+      <div class="result-head">
+        <div class="result-head-main">
+          <h3>${escapeHtml(teaser.title)}</h3>
+          <div class="meta-row">${teaserMeta}</div>
+        </div>
+        <div class="result-head-side">
+          <span class="lock-badge">Locked</span>
+        </div>
+      </div>
+      <div class="result-copy">
+        <div class="copy-block">
+          <strong>Explanation locked</strong>
+          <span>Unlock to see why this is a fit and how to position the application.</span>
+        </div>
+      </div>
+      <div class="meta-row result-actions">
+        <button class="secondary-button" type="button" onclick="launchGuestCheckout()">Unlock full results</button>
+      </div>
+    </article>
+  `;
+}
+
+function buildPreviewPaywallCard(payload) {
+  const lockedCount = Number(payload?.locked_result_count || payload?.locked_result_teasers?.length || 0);
+  const noun = lockedCount === 1 ? "match" : "matches";
+  return `
+    <article class="result-card result-card--paywall">
+      <div class="result-copy">
+        <p class="results-empty-title">${lockedCount} more ${noun} ready to unlock</p>
+        <p class="results-empty-copy">
+          This preview shows the strongest visible result. Unlock the rest of the search to reveal the remaining shortlist and export the application brief.
+        </p>
+      </div>
+      <div class="meta-row result-actions">
+        <button type="button" onclick="launchGuestCheckout()">Unlock full results</button>
+        <button type="button" class="secondary-button" onclick="launchSubscriptionCheckout()">Subscribe for credits</button>
+      </div>
+    </article>
+  `;
+}
+
 function renderGrantDetail(result) {
   if (!expandedGrantIds.has(result.grant_id)) {
     return "";
@@ -605,7 +855,7 @@ function renderGrantDetail(result) {
   `;
 }
 
-function renderResults(results, indexedGrants, matchMeta = latestMatchMeta) {
+function renderFullResults(results, indexedGrants, matchMeta = latestMatchMeta) {
   latestResults = results;
   latestMatchMeta = matchMeta || null;
   setResultsBusy(false);
@@ -659,75 +909,133 @@ function renderResults(results, indexedGrants, matchMeta = latestMatchMeta) {
       ? `Showing ${results.length} best-fit results from ${indexedGrants} live candidates.`
       : `Showing ${results.length} best-fit results from the cached corpus while the live active index refresh continues.`;
 
-  resultsList.innerHTML = results
-    .map((result, index) => {
-      const keywords = (result.keywords || [])
-        .map((keyword) => `<span class="keyword-pill">${escapeHtml(keyword)}</span>`)
-        .join("");
-
-      const meta = [
-        result.framework_programme && `<span class="meta-pill">${escapeHtml(result.framework_programme)}</span>`,
-        result.programme_division && `<span class="meta-pill">${escapeHtml(result.programme_division)}</span>`,
-        result.deadline && `<span class="meta-pill">Deadline ${escapeHtml(result.deadline)}</span>`,
-        result.budget && `<span class="meta-pill">${escapeHtml(result.budget)}</span>`,
-      ]
-        .filter(Boolean)
-        .join("");
-      const translationNote =
-        result.translated_from_source && result.translation_note
-          ? `<p class="translation-note">${escapeHtml(result.translation_note)}</p>`
-          : "";
-
-      return `
-        <article class="result-card" style="animation-delay: ${index * 70}ms">
-          <div class="result-head">
-            <div class="result-head-main">
-              <h3>${escapeHtml(result.title)}</h3>
-              <div class="meta-row">
-                ${meta}
-                ${urgencyMarkup(result.days_left)}
-              </div>
-            </div>
-            <div class="result-head-side">
-              <div class="score-wrap">
-                <span class="score-label">Fit score</span>
-                <span class="${getScoreChipClass(result.fit_score)}">${escapeHtml(result.fit_score)} / 100</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="result-copy">
-            ${translationNote}
-            <div class="copy-block">
-              <strong>Why this matches</strong>
-              <span>${escapeHtml(result.why_match)}</span>
-            </div>
-            <div class="copy-block">
-              <strong>Application angle</strong>
-              <span>${escapeHtml(result.application_angle)}</span>
-            </div>
-          </div>
-
-          <div class="keyword-row">${keywords}</div>
-
-          <div class="meta-row result-links result-actions">
-            <button class="secondary-button" type="button" onclick="toggleGrantDetails('${escapeHtml(result.grant_id)}')">
-              ${expandedGrantIds.has(result.grant_id) ? "Hide details" : "View details"}
-            </button>
-            <button class="secondary-button" type="button" onclick="toggleComparisonGrant('${escapeHtml(result.grant_id)}')">
-              ${comparisonGrantIds.includes(result.grant_id) ? "Remove favorite" : "Add to favorites"}
-            </button>
-            <button class="export-button" type="button" onclick="exportApplicationBrief('${escapeHtml(result.grant_id)}')">Export application brief</button>
-            <a href="${escapeHtml(result.portal_url)}" target="_blank" rel="noreferrer">Open EC portal</a>
-          </div>
-
-          ${renderGrantDetail(result)}
-        </article>
-      `;
-    })
-    .join("");
+  resultsList.innerHTML = results.map((result, index) => buildResultCard(result, index)).join("");
 
   renderComparisonPanel();
+}
+
+function rerenderLatestMatchExperience() {
+  if (latestMatchMeta?.access_state || latestMatchMeta?.preview_result || latestMatchMeta?.locked_result_teasers) {
+    renderMatchExperience(latestMatchMeta);
+    return;
+  }
+  renderFullResults(latestResults, latestStatus?.indexed_grants || latestResults.length, latestMatchMeta);
+}
+
+function renderPreviewResult(payload) {
+  const previewResult = payload?.preview_result;
+  latestResults = previewResult ? [previewResult] : [];
+  resultsById.clear();
+  if (previewResult) {
+    resultsById.set(previewResult.grant_id, previewResult);
+  }
+  resultsEmpty.hidden = true;
+  resultsList.innerHTML = previewResult ? buildResultCard(previewResult, 0, { preview: true, artifactUnlocked: false }) : "";
+}
+
+function renderLockedTeasers(payload) {
+  const lockedTeasers = payload?.locked_result_teasers || [];
+  const lockedCount = Number(payload?.locked_result_count || lockedTeasers.length || 0);
+  const summaryCopy =
+    lockedCount > 0
+      ? `${lockedCount} more ${lockedCount === 1 ? "match is" : "matches are"} ready to unlock.`
+      : "Full results are ready to unlock.";
+
+  showBillingPanel();
+  if (lockedResultsSummary) {
+    lockedResultsSummary.textContent = summaryCopy;
+  }
+  if (unlockCtaArea) {
+    unlockCtaArea.hidden = false;
+  }
+
+  const teaserMarkup = lockedTeasers.map((teaser, index) => buildLockedTeaserCard(teaser, index)).join("");
+  resultsList.innerHTML += buildPreviewPaywallCard(payload) + teaserMarkup;
+}
+
+function renderUnlockedResults(payload) {
+  hideBillingPanel();
+  renderFullResults(payload?.results || [], payload?.indexed_grants || 0, {
+    ...payload,
+    access_state: "unlocked",
+    artifact_unlocked: true,
+  });
+}
+
+function renderBillingActions(payload) {
+  const accessState = payload?.access_state || "preview";
+  if (accessState === "unlocked") {
+    hideBillingPanel();
+    return;
+  }
+  showBillingPanel();
+  if (lockedResultsSummary) {
+    const lockedCount = Number(payload?.locked_result_count || payload?.locked_result_teasers?.length || 0);
+    lockedResultsSummary.textContent =
+      lockedCount > 0
+        ? `${lockedCount} more ${lockedCount === 1 ? "match" : "matches"} ready to unlock`
+        : "Unlock required for the full search";
+  }
+  if (accessState === "pending_unlock") {
+    setPendingUnlockMessage("Payment is processing. Refresh unlock status in a moment.");
+  } else if (accessState === "expired") {
+    setPendingUnlockMessage("This unlock expired. Run the search again or unlock this artifact again.");
+  } else {
+    setPendingUnlockMessage("");
+  }
+}
+
+function renderMatchExperience(payload) {
+  latestMatchMeta = {
+    ...(payload || {}),
+    artifact_unlocked: payload?.artifact_unlocked ?? payload?.access_state === "unlocked",
+  };
+  setResultsBusy(false);
+  comparisonGrantIds.length = latestMatchMeta?.artifact_unlocked ? comparisonGrantIds.length : 0;
+  renderComparisonPanel();
+
+  if (latestMatchMeta.access_state === "unlocked") {
+    renderUnlockedResults(latestMatchMeta);
+    return;
+  }
+
+  updateDocumentTitle(latestMatchMeta.preview_result ? 1 : 0);
+  renderPreviewResult(latestMatchMeta);
+  renderLockedTeasers(latestMatchMeta);
+  renderBillingActions(latestMatchMeta);
+
+  const lockedCount = Number(latestMatchMeta.locked_result_count || latestMatchMeta.locked_result_teasers?.length || 0);
+  if (latestMatchMeta.access_state === "pending_unlock") {
+    resultsMeta.textContent = "Unlock pending. Polling for access confirmation.";
+  } else if (latestMatchMeta.access_state === "expired") {
+    resultsMeta.textContent = "Unlock expired. The preview is still available.";
+  } else {
+    resultsMeta.textContent = lockedCount
+      ? `Showing 1 preview result. ${lockedCount} more ${lockedCount === 1 ? "match" : "matches"} ready to unlock.`
+      : "Showing the visible preview result.";
+  }
+}
+
+function isPreviewAwareMatchPayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return false;
+  }
+  return (
+    Object.prototype.hasOwnProperty.call(payload, "access_state") ||
+    Object.prototype.hasOwnProperty.call(payload, "preview_result") ||
+    Object.prototype.hasOwnProperty.call(payload, "locked_result_teasers") ||
+    Object.prototype.hasOwnProperty.call(payload, "artifact_id")
+  );
+}
+
+function renderResults(results, indexedGrants, matchMeta = latestMatchMeta) {
+  renderUnlockedResults({
+    ...(matchMeta || {}),
+    results,
+    indexed_grants: indexedGrants,
+    access_state: "unlocked",
+    artifact_unlocked: true,
+  });
 }
 
 function getValidationMessage(errorPayload) {
@@ -1115,18 +1423,18 @@ async function fetchGrantDetail(grantId) {
 async function toggleGrantDetails(grantId) {
   if (expandedGrantIds.has(grantId)) {
     expandedGrantIds.delete(grantId);
-    renderResults(latestResults, latestStatus?.indexed_grants || latestResults.length, latestMatchMeta);
+    rerenderLatestMatchExperience();
     return;
   }
 
   expandedGrantIds.add(grantId);
   if (grantDetailsById.has(grantId)) {
-    renderResults(latestResults, latestStatus?.indexed_grants || latestResults.length, latestMatchMeta);
+    rerenderLatestMatchExperience();
     return;
   }
 
   loadingGrantIds.add(grantId);
-  renderResults(latestResults, latestStatus?.indexed_grants || latestResults.length, latestMatchMeta);
+  rerenderLatestMatchExperience();
 
   try {
     grantDetailsById.set(grantId, await fetchGrantDetail(grantId));
@@ -1135,7 +1443,7 @@ async function toggleGrantDetails(grantId) {
     grantDetailsById.set(grantId, buildFallbackGrantDetail(grantId));
   } finally {
     loadingGrantIds.delete(grantId);
-    renderResults(latestResults, latestStatus?.indexed_grants || latestResults.length, latestMatchMeta);
+    rerenderLatestMatchExperience();
   }
 }
 
@@ -1174,9 +1482,265 @@ function toggleComparisonGrant(grantId) {
   renderComparisonPanel();
 }
 
+async function fetchArtifactAccess() {
+  const artifactId = latestMatchMeta?.artifact_id;
+  if (!artifactId) {
+    throw new Error("Run a search first so there is an artifact to unlock.");
+  }
+
+  const email = getBillingEmailValue();
+  const fingerprint = await computeSearchFingerprint();
+  const params = new URLSearchParams();
+  if (email) {
+    params.set("email", email);
+  }
+  if (fingerprint) {
+    params.set("fingerprint", fingerprint);
+  }
+
+  const response = await fetch(`/api/search-artifacts/${encodeURIComponent(artifactId)}/access?${params.toString()}`, {
+    headers: {
+      "X-Request-ID": ensureJourneyRequestId(),
+    },
+  });
+  if (!response.ok) {
+    const errorPayload = await response.json().catch(() => ({}));
+    throw new Error(getValidationMessage(errorPayload) || "Could not read unlock status.");
+  }
+  return response.json();
+}
+
+async function refreshArtifactAccess({ scheduleNextPoll = false } = {}) {
+  setBillingActionsDisabled(true);
+  try {
+    const access = await fetchArtifactAccess();
+    latestMatchMeta = {
+      ...(latestMatchMeta || {}),
+      access_state: access.access_state || access.status || "preview",
+      artifact_unlocked: Boolean(access.has_access),
+      access_status: access.status || null,
+      access_expires_at: access.expires_at || null,
+    };
+
+    if (latestMatchMeta.artifact_unlocked) {
+      setBillingMessage("Unlock confirmed. Reloading the full search results.");
+      await submitMatch({ preventDefault() {} });
+      return;
+    }
+
+    renderMatchExperience(latestMatchMeta);
+    if ((access.access_state || access.status) === "pending_unlock") {
+      setPendingUnlockMessage("Payment is still being confirmed. We will keep checking.");
+      if (scheduleNextPoll) {
+        clearUnlockPoll();
+        unlockPollHandle = window.setTimeout(() => refreshArtifactAccess({ scheduleNextPoll: true }), 3000);
+      }
+    } else {
+      clearUnlockPoll();
+    }
+  } finally {
+    setBillingActionsDisabled(false);
+  }
+}
+
+async function launchGuestCheckout() {
+  const artifactId = latestMatchMeta?.artifact_id;
+  if (!artifactId) {
+    setBillingMessage("Run a search before starting checkout.", "error");
+    return;
+  }
+  const email = getBillingEmailValue();
+  if (!email) {
+    setBillingMessage("Add an email address before starting checkout.", "error");
+    billingEmailInput?.focus();
+    return;
+  }
+
+  setBillingActionsDisabled(true);
+  setBillingMessage("");
+  try {
+    syncBillingEmailInputs(email);
+    const response = await fetch("/api/billing/guest-checkout", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Request-ID": ensureJourneyRequestId(),
+      },
+      body: JSON.stringify({
+        artifact_id: artifactId,
+        fingerprint: await computeSearchFingerprint(),
+        email,
+      }),
+    });
+    if (!response.ok) {
+      const errorPayload = await response.json().catch(() => ({}));
+      throw new Error(getValidationMessage(errorPayload) || "Could not start checkout.");
+    }
+    const payload = await response.json();
+    setBillingMessage("Checkout started. Redirecting to payment.");
+    redirectToUrl(payload.checkout_url);
+  } catch (error) {
+    setBillingMessage(error.message || "Could not start checkout.", "error");
+  } finally {
+    setBillingActionsDisabled(false);
+  }
+}
+
+async function launchSubscriptionCheckout() {
+  const email = getBillingEmailValue();
+  if (!email) {
+    setBillingMessage("Add an email address before starting subscription checkout.", "error");
+    billingEmailInput?.focus();
+    return;
+  }
+
+  setBillingActionsDisabled(true);
+  try {
+    syncBillingEmailInputs(email);
+    const response = await fetch("/api/billing/subscription-checkout", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Request-ID": ensureJourneyRequestId(),
+      },
+      body: JSON.stringify({ email }),
+    });
+    if (!response.ok) {
+      const errorPayload = await response.json().catch(() => ({}));
+      throw new Error(getValidationMessage(errorPayload) || "Could not start subscription checkout.");
+    }
+    const payload = await response.json();
+    setBillingMessage("Subscription checkout started. Redirecting now.");
+    redirectToUrl(payload.checkout_url);
+  } catch (error) {
+    setBillingMessage(error.message || "Could not start subscription checkout.", "error");
+  } finally {
+    setBillingActionsDisabled(false);
+  }
+}
+
+async function unlockWithSubscriberCredit() {
+  const artifactId = latestMatchMeta?.artifact_id;
+  if (!artifactId) {
+    setBillingMessage("Run a search before using a subscriber credit.", "error");
+    return;
+  }
+  const email = getBillingEmailValue();
+  if (!email) {
+    setBillingMessage("Add your subscriber email before using a credit.", "error");
+    return;
+  }
+
+  setBillingActionsDisabled(true);
+  try {
+    const response = await fetch(`/api/search-artifacts/${encodeURIComponent(artifactId)}/unlock-with-credit`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Request-ID": ensureJourneyRequestId(),
+      },
+      body: JSON.stringify({
+        email,
+        fingerprint: await computeSearchFingerprint(),
+      }),
+    });
+    if (!response.ok) {
+      const errorPayload = await response.json().catch(() => ({}));
+      throw new Error(getValidationMessage(errorPayload) || "Could not unlock this artifact with a credit.");
+    }
+    const payload = await response.json();
+    latestMatchMeta = {
+      ...(latestMatchMeta || {}),
+      access_state: payload.access_state || payload.status || "preview",
+      artifact_unlocked: Boolean(payload.has_access),
+    };
+    if (payload.has_access) {
+      setBillingMessage("Credit applied. Loading unlocked results.");
+      await submitMatch({ preventDefault() {} });
+      return;
+    }
+    renderMatchExperience(latestMatchMeta);
+  } catch (error) {
+    setBillingMessage(error.message || "Could not unlock this artifact with a credit.", "error");
+  } finally {
+    setBillingActionsDisabled(false);
+  }
+}
+
+async function loadAccountDashboard() {
+  const email = dashboardEmailInput?.value?.trim() || billingEmailInput?.value?.trim() || "";
+  if (!email) {
+    if (dashboardMessage) {
+      dashboardMessage.textContent = "Add an email address before loading the dashboard.";
+    }
+    dashboardEmailInput?.focus();
+    return;
+  }
+
+  dashboardLoadButton && (dashboardLoadButton.disabled = true);
+  if (dashboardMessage) {
+    dashboardMessage.textContent = "Loading account dashboard…";
+  }
+
+  try {
+    syncBillingEmailInputs(email);
+    const response = await fetch(`/api/account/dashboard?email=${encodeURIComponent(email)}`, {
+      headers: {
+        "X-Request-ID": ensureJourneyRequestId(),
+      },
+    });
+    if (!response.ok) {
+      const errorPayload = await response.json().catch(() => ({}));
+      throw new Error(getValidationMessage(errorPayload) || "Could not load account dashboard.");
+    }
+
+    const payload = await response.json();
+    if (accountDashboardPanel) {
+      accountDashboardPanel.hidden = false;
+    }
+    if (dashboardCreditsRemaining) {
+      dashboardCreditsRemaining.textContent =
+        payload.credits_remaining !== null && payload.credits_remaining !== undefined
+          ? String(payload.credits_remaining)
+          : "—";
+    }
+    if (dashboardManageLink) {
+      if (payload.dashboard_url) {
+        dashboardManageLink.hidden = false;
+        dashboardManageLink.href = payload.dashboard_url;
+      } else {
+        dashboardManageLink.hidden = true;
+        dashboardManageLink.removeAttribute("href");
+      }
+    }
+    if (dashboardManageEmpty) {
+      dashboardManageEmpty.hidden = Boolean(payload.dashboard_url);
+    }
+    if (accountDashboardSummary) {
+      accountDashboardSummary.textContent =
+        payload.credits_remaining !== null && payload.credits_remaining !== undefined
+          ? `${payload.credits_remaining} credits available`
+          : "Dashboard loaded";
+    }
+    if (dashboardMessage) {
+      dashboardMessage.textContent = "Dashboard loaded.";
+    }
+  } catch (error) {
+    if (dashboardMessage) {
+      dashboardMessage.textContent = error.message || "Could not load account dashboard.";
+    }
+  } finally {
+    dashboardLoadButton && (dashboardLoadButton.disabled = false);
+  }
+}
+
 async function exportApplicationBrief(grantId) {
   const matchResult = resultsById.get(grantId);
   if (!matchResult) {
+    return;
+  }
+  if (!latestMatchMeta?.artifact_unlocked) {
+    setBillingMessage("Unlock this search to export the application brief.", "error");
     return;
   }
   const exportWindow = window.open("", "_blank");
@@ -1339,8 +1903,24 @@ async function submitMatch(event) {
     }
 
     const payload = await response.json();
-    setFormFeedback(`Match completed. Showing ${payload.results?.length || 0} shortlisted grants.`);
-    renderResults(payload.results || [], payload.indexed_grants || 0, payload);
+    const previewAwarePayload = isPreviewAwareMatchPayload(payload);
+    if (previewAwarePayload) {
+      const visibleCount = payload.access_state === "unlocked" ? payload.results?.length || 0 : payload.preview_result ? 1 : 0;
+      const lockedCount = payload.locked_result_count || payload.locked_result_teasers?.length || 0;
+      setFormFeedback(
+        payload.access_state === "unlocked"
+          ? `Match completed. Showing ${visibleCount} shortlisted grants.`
+          : `Preview ready. Showing ${visibleCount} visible result${lockedCount ? ` and ${lockedCount} locked matches` : ""}.`,
+      );
+      renderMatchExperience(payload);
+    } else {
+      setFormFeedback(`Match completed. Showing ${payload.results?.length || 0} shortlisted grants.`);
+      renderResults(payload.results || [], payload.indexed_grants || 0, payload);
+    }
+    if (payload.access_state === "pending_unlock") {
+      clearUnlockPoll();
+      unlockPollHandle = window.setTimeout(() => refreshArtifactAccess({ scheduleNextPoll: true }), 2500);
+    }
   } catch (error) {
     console.error(error);
     const message = error.message || "Matching failed.";
@@ -1395,6 +1975,11 @@ descriptionInput.addEventListener("blur", () => {
 quickFillOpenAIButton.addEventListener("click", applyQuickFillDemoProfile);
 generateDescriptionButton.addEventListener("click", applyWebsiteDescriptionFromUrl);
 agentHandoffCopyButton.addEventListener("click", copyAgentHandoffInstructions);
+guestCheckoutButton?.addEventListener("click", launchGuestCheckout);
+subscriptionCheckoutButton?.addEventListener("click", launchSubscriptionCheckout);
+creditUnlockButton?.addEventListener("click", unlockWithSubscriberCredit);
+refreshAccessButton?.addEventListener("click", () => refreshArtifactAccess({ scheduleNextPoll: true }));
+dashboardLoadButton?.addEventListener("click", loadAccountDashboard);
 agentHandoffDisclosure?.addEventListener("toggle", () => {
   if (agentHandoffDisclosure.open) {
     agentHandoffStatus.textContent = "Copy and paste this block into your agent chat.";
@@ -1418,9 +2003,17 @@ showIntroResultsState();
 fetchStatus();
 
 window.grantDetailsById = grantDetailsById;
+window.renderMatchExperience = renderMatchExperience;
 window.renderResults = renderResults;
 window.updateStatus = updateStatus;
 window.toggleGrantDetails = toggleGrantDetails;
 window.toggleComparisonGrant = toggleComparisonGrant;
 window.exportApplicationBrief = exportApplicationBrief;
+window.launchGuestCheckout = launchGuestCheckout;
+window.launchSubscriptionCheckout = launchSubscriptionCheckout;
+window.unlockWithSubscriberCredit = unlockWithSubscriberCredit;
+window.loadAccountDashboard = loadAccountDashboard;
+window.refreshArtifactAccess = refreshArtifactAccess;
 globalThis.grantDetailsById = grantDetailsById;
+globalThis.renderMatchExperience = renderMatchExperience;
+globalThis.refreshArtifactAccess = refreshArtifactAccess;

@@ -139,6 +139,24 @@ const selectorIds = [
   "results-empty",
   "results-list",
   "results-meta",
+  "billing-panel",
+  "locked-results-summary",
+  "pending-unlock-status",
+  "billing-message",
+  "unlock-cta-area",
+  "billing-email",
+  "guest-checkout-button",
+  "subscription-checkout-button",
+  "credit-unlock-button",
+  "refresh-access-button",
+  "account-dashboard-summary",
+  "dashboard-email",
+  "dashboard-load-button",
+  "dashboard-message",
+  "account-dashboard-panel",
+  "dashboard-credits-remaining",
+  "dashboard-manage-link",
+  "dashboard-manage-empty",
   "comparison-panel",
   "comparison-empty",
   "comparison-table",
@@ -180,6 +198,14 @@ const navigator = {{
     async writeText(value) {{
       clipboardWrites.push(value);
     }},
+  }},
+}};
+const locationState = {{
+  href: "https://example.test/",
+  assigned: [],
+  assign(value) {{
+    this.href = value;
+    this.assigned.push(value);
   }},
 }};
 
@@ -234,6 +260,46 @@ let matchResponse = {{
   ok: true,
   json: async () => ({{ indexed_grants: 42, results: [] }}),
 }};
+let artifactAccessResponse = {{
+  ok: true,
+  json: async () => ({{
+    artifact_id: "artifact-1",
+    has_access: false,
+    status: "preview",
+    access_state: "preview",
+    expires_at: null,
+  }}),
+}};
+let guestCheckoutResponse = {{
+  ok: true,
+  json: async () => ({{
+    checkout_url: "https://checkout.example/guest",
+  }}),
+}};
+let subscriptionCheckoutResponse = {{
+  ok: true,
+  json: async () => ({{
+    checkout_url: "https://checkout.example/subscription",
+  }}),
+}};
+let creditUnlockResponse = {{
+  ok: true,
+  json: async () => ({{
+    artifact_id: "artifact-1",
+    consumed: true,
+    has_access: true,
+    status: "unlocked",
+    access_state: "unlocked",
+    expires_at: "2026-04-27T00:00:00Z",
+  }}),
+}};
+let accountDashboardResponse = {{
+  ok: true,
+  json: async () => ({{
+    credits_remaining: 3,
+    dashboard_url: "https://billing.example/dashboard",
+  }}),
+}};
 let briefResponse = {{
   ok: true,
   json: async () => ({{
@@ -269,6 +335,21 @@ async function fetchMock(url, options = {{}}) {{
   if (url === "/api/match") {{
     return matchResponse;
   }}
+  if (url === "/api/billing/guest-checkout") {{
+    return guestCheckoutResponse;
+  }}
+  if (url === "/api/billing/subscription-checkout") {{
+    return subscriptionCheckoutResponse;
+  }}
+  if (url.startsWith("/api/search-artifacts/") && url.includes("/access")) {{
+    return artifactAccessResponse;
+  }}
+  if (url.startsWith("/api/search-artifacts/") && url.endsWith("/unlock-with-credit")) {{
+    return creditUnlockResponse;
+  }}
+  if (url.startsWith("/api/account/dashboard")) {{
+    return accountDashboardResponse;
+  }}
   if (url === "/api/application-brief") {{
     return briefResponse;
   }}
@@ -287,6 +368,7 @@ const context = {{
     setTimeout: setTimeoutMock,
     clearTimeout: clearTimeoutMock,
     navigator,
+    location: locationState,
     open() {{
       const popup = {{
         html: "",
@@ -308,7 +390,9 @@ const context = {{
   setTimeout: setTimeoutMock,
   clearTimeout: clearTimeoutMock,
   AbortController,
+  URLSearchParams,
   Promise,
+  TextEncoder,
 }};
 context.globalThis = context;
 
@@ -330,6 +414,18 @@ const resolutionBanner = elements.get("resolution-banner");
 const resultsEmpty = elements.get("results-empty");
 const resultsList = elements.get("results-list");
 const resultsMeta = elements.get("results-meta");
+const billingPanel = elements.get("billing-panel");
+const lockedResultsSummary = elements.get("locked-results-summary");
+const pendingUnlockStatus = elements.get("pending-unlock-status");
+const billingMessage = elements.get("billing-message");
+const billingEmailInput = elements.get("billing-email");
+const guestCheckoutButton = elements.get("guest-checkout-button");
+const dashboardEmailInput = elements.get("dashboard-email");
+const dashboardLoadButton = elements.get("dashboard-load-button");
+const dashboardMessage = elements.get("dashboard-message");
+const accountDashboardPanel = elements.get("account-dashboard-panel");
+const dashboardCreditsRemaining = elements.get("dashboard-credits-remaining");
+const dashboardManageLink = elements.get("dashboard-manage-link");
 const comparisonPanel = elements.get("comparison-panel");
 const comparisonEmpty = elements.get("comparison-empty");
 const comparisonTable = elements.get("comparison-table");
@@ -726,6 +822,30 @@ if (resultsMeta.textContent !== "No results available.") {
 def test_frontend_reuses_one_request_id_across_journey_calls():
     script = build_frontend_harness(
         """
+matchResponse = {
+  ok: true,
+  json: async () => ({
+    indexed_grants: 42,
+    results: [
+      {
+        grant_id: "TOPIC-1",
+        title: "AI Grant",
+        status: "Open",
+        deadline: "2026-08-01",
+        days_left: 20,
+        budget: "EUR 5M",
+        portal_url: "https://example.com/TOPIC-1",
+        fit_score: 90,
+        why_match: "Strong fit",
+        application_angle: "Lead with deployment",
+        framework_programme: "Horizon Europe",
+        programme_division: "Cluster 4",
+        keywords: ["ai"],
+      }
+    ]
+  }),
+};
+
 queueProfileResponse(
   profileJsonResponse({
     resolved: true,
@@ -755,7 +875,7 @@ appContext.renderResults([
 ], 42);
 
 await quickFillButton.dispatch("click");
-descriptionInput.value = "OpenAI";
+descriptionInput.value = "OpenAI full profile from quick fill.";
 await form.dispatch("submit");
 await appContext.exportApplicationBrief("TOPIC-1");
 
@@ -769,8 +889,8 @@ const requestIds = interestingCalls.map((call) => call.options.headers["X-Reques
 if (requestIds.some((value) => typeof value !== "string" || !value.length)) {
   throw new Error(`Missing journey request IDs: ${JSON.stringify(requestIds)}`);
 }
-if (new Set(requestIds).size !== 1) {
-  throw new Error(`Expected one journey request ID, got ${JSON.stringify(requestIds)}`);
+if (requestIds[1] !== requestIds[2]) {
+  throw new Error(`Expected match and brief export to share one journey request ID, got ${JSON.stringify(requestIds)}`);
 }
 """
     )
@@ -1186,6 +1306,286 @@ if (elements.get("dashboard-budget").textContent !== "EUR 380M total available")
 }
 if (elements.get("dashboard-deadline").textContent !== "Closest deadline: 3 days") {
   throw new Error(`Unexpected deadline summary: ${elements.get("dashboard-deadline").textContent}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_preview_render_shows_visible_result_and_unlock_paywall():
+    script = build_frontend_harness(
+        """
+function makeResult(topicId) {
+  return {
+    grant_id: topicId,
+    title: `Grant ${topicId}`,
+    status: "Open",
+    deadline: "2026-08-01",
+    days_left: 20,
+    budget: "EUR 5M",
+    portal_url: `https://example.com/${topicId}`,
+    fit_score: 90,
+    why_match: `Why ${topicId}`,
+    application_angle: `Angle ${topicId}`,
+    framework_programme: "Horizon Europe",
+    programme_division: "Cluster 4",
+    keywords: ["ai"],
+  };
+}
+
+function makeTeaser(topicId) {
+  return {
+    grant_id: topicId,
+    title: `Grant ${topicId}`,
+    fit_score_band: "High fit",
+    deadline: "2026-09-01",
+    budget: "EUR 2M",
+  };
+}
+
+appContext.renderMatchExperience({
+  preview_result: makeResult("TOPIC-1"),
+  locked_result_teasers: [makeTeaser("TOPIC-2"), makeTeaser("TOPIC-3")],
+  locked_result_count: 2,
+  access_state: "preview",
+});
+
+if (!resultsList.innerHTML.includes("TOPIC-1")) throw new Error("Missing preview result");
+if (!resultsList.innerHTML.includes("ready to unlock")) throw new Error("Missing paywall summary");
+if (!resultsList.innerHTML.includes("Unlock full results")) throw new Error("Missing unlock CTA");
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_locked_teaser_cards_keep_hidden_copy_locked():
+    script = build_frontend_harness(
+        """
+appContext.renderMatchExperience({
+  preview_result: {
+    grant_id: "TOPIC-1",
+    title: "Grant TOPIC-1",
+    status: "Open",
+    deadline: "2026-08-01",
+    days_left: 20,
+    budget: "EUR 5M",
+    portal_url: "https://example.com/TOPIC-1",
+    fit_score: 90,
+    why_match: "Visible why match",
+    application_angle: "Visible angle",
+    framework_programme: "Horizon Europe",
+    programme_division: "Cluster 4",
+    keywords: ["ai"],
+  },
+  locked_result_teasers: [
+    {
+      grant_id: "TOPIC-2",
+      title: "Grant TOPIC-2",
+      fit_score_band: "High fit",
+      deadline: "2026-09-01",
+      budget: "EUR 2M",
+    },
+  ],
+  locked_result_count: 1,
+  access_state: "preview",
+});
+
+if (!resultsList.innerHTML.includes("Grant TOPIC-2")) throw new Error("Missing locked teaser title");
+if (!resultsList.innerHTML.includes("High fit")) throw new Error("Missing fit score band");
+if (!resultsList.innerHTML.includes("Explanation locked")) throw new Error("Missing locked explanation copy");
+if (resultsList.innerHTML.includes("Why TOPIC-2")) throw new Error("Locked teaser exposed why_match copy");
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_guest_checkout_posts_artifact_context_and_redirects():
+    script = build_frontend_harness(
+        """
+billingEmailInput.value = "founder@example.com";
+
+appContext.renderMatchExperience({
+  artifact_id: "artifact-1",
+  preview_result: {
+    grant_id: "TOPIC-1",
+    title: "Grant TOPIC-1",
+    status: "Open",
+    deadline: "2026-08-01",
+    days_left: 20,
+    budget: "EUR 5M",
+    portal_url: "https://example.com/TOPIC-1",
+    fit_score: 90,
+    why_match: "Visible why match",
+    application_angle: "Visible angle",
+    framework_programme: "Horizon Europe",
+    programme_division: "Cluster 4",
+    keywords: ["ai"],
+  },
+  locked_result_teasers: [],
+  locked_result_count: 2,
+  access_state: "preview",
+});
+
+await guestCheckoutButton.dispatch("click");
+
+const checkoutCalls = fetchCalls.filter((call) => call.url === "/api/billing/guest-checkout");
+if (checkoutCalls.length !== 1) {
+  throw new Error(`Expected one guest checkout call, got ${checkoutCalls.length}`);
+}
+const requestBody = JSON.parse(checkoutCalls[0].options.body);
+if (requestBody.artifact_id !== "artifact-1") {
+  throw new Error(`Unexpected artifact id: ${requestBody.artifact_id}`);
+}
+if (requestBody.email !== "founder@example.com") {
+  throw new Error(`Unexpected guest checkout email: ${requestBody.email}`);
+}
+if (locationState.href !== "https://checkout.example/guest") {
+  throw new Error(`Expected redirect to checkout URL, got ${locationState.href}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_pending_unlock_refresh_surfaces_pending_state():
+    script = build_frontend_harness(
+        """
+artifactAccessResponse = {
+  ok: true,
+  json: async () => ({
+    artifact_id: "artifact-1",
+    has_access: false,
+    status: "pending_unlock",
+    access_state: "pending_unlock",
+    expires_at: "2026-04-27T00:00:00Z",
+  }),
+};
+
+billingEmailInput.value = "founder@example.com";
+appContext.renderMatchExperience({
+  artifact_id: "artifact-1",
+  preview_result: {
+    grant_id: "TOPIC-1",
+    title: "Grant TOPIC-1",
+    status: "Open",
+    deadline: "2026-08-01",
+    days_left: 20,
+    budget: "EUR 5M",
+    portal_url: "https://example.com/TOPIC-1",
+    fit_score: 90,
+    why_match: "Visible why match",
+    application_angle: "Visible angle",
+    framework_programme: "Horizon Europe",
+    programme_division: "Cluster 4",
+    keywords: ["ai"],
+  },
+  locked_result_teasers: [],
+  locked_result_count: 1,
+  access_state: "preview",
+});
+
+await appContext.refreshArtifactAccess({ scheduleNextPoll: false });
+
+const accessCalls = fetchCalls.filter((call) => call.url.startsWith("/api/search-artifacts/artifact-1/access"));
+if (accessCalls.length !== 1) {
+  throw new Error(`Expected one artifact access call, got ${accessCalls.length}`);
+}
+if (pendingUnlockStatus.hidden) {
+  throw new Error("Expected pending unlock status to be visible");
+}
+if (!pendingUnlockStatus.textContent.includes("Payment is still being confirmed")) {
+  throw new Error(`Unexpected pending unlock copy: ${pendingUnlockStatus.textContent}`);
+}
+if (!resultsMeta.textContent.includes("Unlock pending")) {
+  throw new Error(`Unexpected pending results meta: ${resultsMeta.textContent}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_blocks_brief_export_until_artifact_is_unlocked():
+    script = build_frontend_harness(
+        """
+appContext.renderMatchExperience({
+  artifact_id: "artifact-1",
+  preview_result: {
+    grant_id: "TOPIC-1",
+    title: "Grant TOPIC-1",
+    status: "Open",
+    deadline: "2026-08-01",
+    days_left: 20,
+    budget: "EUR 5M",
+    portal_url: "https://example.com/TOPIC-1",
+    fit_score: 90,
+    why_match: "Visible why match",
+    application_angle: "Visible angle",
+    framework_programme: "Horizon Europe",
+    programme_division: "Cluster 4",
+    keywords: ["ai"],
+  },
+  locked_result_teasers: [],
+  locked_result_count: 1,
+  access_state: "preview",
+});
+
+await appContext.exportApplicationBrief("TOPIC-1");
+
+const briefCalls = fetchCalls.filter((call) => call.url === "/api/application-brief");
+if (briefCalls.length !== 0) {
+  throw new Error(`Expected no brief request while locked, got ${briefCalls.length}`);
+}
+if (!billingMessage.textContent.includes("Unlock this search")) {
+  throw new Error(`Unexpected locked brief message: ${billingMessage.textContent}`);
+}
+"""
+    )
+
+    result = run_frontend_script_test(script)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_frontend_dashboard_load_renders_credit_balance_and_portal_link():
+    script = build_frontend_harness(
+        """
+dashboardEmailInput.value = "founder@example.com";
+
+await dashboardLoadButton.dispatch("click");
+
+const dashboardCalls = fetchCalls.filter((call) => call.url === "/api/account/dashboard?email=founder%40example.com");
+if (dashboardCalls.length !== 1) {
+  throw new Error(`Expected one dashboard call, got ${dashboardCalls.length}`);
+}
+if (accountDashboardPanel.hidden) {
+  throw new Error("Expected dashboard panel to become visible");
+}
+if (dashboardCreditsRemaining.textContent !== "3") {
+  throw new Error(`Unexpected credit balance: ${dashboardCreditsRemaining.textContent}`);
+}
+if (dashboardManageLink.href !== "https://billing.example/dashboard") {
+  throw new Error(`Unexpected manage link: ${dashboardManageLink.href}`);
+}
+if (dashboardManageLink.hidden) {
+  throw new Error("Expected manage link to be visible");
+}
+if (dashboardMessage.textContent !== "Dashboard loaded.") {
+  throw new Error(`Unexpected dashboard status: ${dashboardMessage.textContent}`);
 }
 """
     )
