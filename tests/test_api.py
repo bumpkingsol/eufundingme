@@ -379,6 +379,106 @@ def test_match_endpoint_returns_ranked_results():
     assert response.json()["degradation_reasons"] == ["openai_scoring_failed"]
 
 
+def test_match_endpoint_returns_preview_and_locked_teasers():
+    class FakeState:
+        def ensure_indexing_started(self) -> None:
+            return None
+
+        def get_status(self) -> IndexStatus:
+            return IndexStatus(
+                phase="ready",
+                message="Ready",
+                indexed_grants=3,
+                scanned_prefixes=1,
+                total_prefixes=1,
+                failed_prefixes=0,
+                truncated_prefixes=0,
+                embeddings_ready=True,
+                degraded=False,
+                coverage_complete=True,
+                matching_available=True,
+                degradation_reasons=[],
+            )
+
+        def get_grants(self) -> list[object]:
+            return ["placeholder"]
+
+    class FakeMatchService:
+        def match(
+            self,
+            company_description: str,
+            grants: list[object],
+            now=None,
+            limit: int = 10,
+            base_degradation_reasons=None,
+        ) -> MatchResponse:
+            return MatchResponse(
+                indexed_grants=3,
+                degraded=False,
+                degradation_reasons=[],
+                results=[
+                    MatchResult(
+                        grant_id="TOPIC-1",
+                        title="AI Safety Grant",
+                        status="Open",
+                        deadline="2026-08-01",
+                        days_left=105,
+                        budget="EUR 6.2M",
+                        portal_url="https://example.com/TOPIC-1",
+                        fit_score=92,
+                        why_match="Strong overlap in AI safety deployment.",
+                        application_angle="Lead with trusted deployment across Europe.",
+                        framework_programme="Horizon Europe",
+                        programme_division="Cluster 4",
+                        keywords=["ai", "safety"],
+                    ),
+                    MatchResult(
+                        grant_id="TOPIC-2",
+                        title="Climate Grant",
+                        status="Open",
+                        deadline="2026-08-15",
+                        days_left=119,
+                        budget="EUR 3.0M",
+                        portal_url="https://example.com/TOPIC-2",
+                        fit_score=84,
+                        why_match="Strong fit on climate tooling.",
+                        application_angle="Lead with measurable emissions impact.",
+                        framework_programme="Horizon Europe",
+                        programme_division="Cluster 5",
+                        keywords=["climate"],
+                    ),
+                    MatchResult(
+                        grant_id="TOPIC-3",
+                        title="Cyber Grant",
+                        status="Open",
+                        deadline="2026-09-01",
+                        days_left=136,
+                        budget="EUR 4.1M",
+                        portal_url="https://example.com/TOPIC-3",
+                        fit_score=76,
+                        why_match="Strong fit on security tooling.",
+                        application_angle="Lead with resilient deployment.",
+                        framework_programme="Digital Europe",
+                        programme_division="Cybersecurity",
+                        keywords=["security"],
+                    ),
+                ],
+            )
+
+    client = TestClient(create_app(app_state=FakeState(), match_service=FakeMatchService()))
+
+    response = client.post("/api/match", json={"company_description": "We build AI tools across Europe."})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["preview_result"]["grant_id"] == "TOPIC-1"
+    assert payload["locked_result_count"] == 2
+    assert payload["access_state"] == "preview"
+    assert len(payload["results"]) == 1
+    assert payload["results"][0]["grant_id"] == "TOPIC-1"
+    assert len(payload["locked_result_teasers"]) == 2
+
+
 def test_match_endpoint_returns_translated_non_english_results():
     class FakeState:
         def ensure_indexing_started(self) -> None:

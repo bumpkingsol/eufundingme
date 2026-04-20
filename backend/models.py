@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from enum import Enum
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -115,6 +116,21 @@ class MatchResult(BaseModel):
     keywords: list[str] = Field(default_factory=list)
 
 
+class LockedResultTeaser(BaseModel):
+    grant_id: str
+    title: str
+    fit_score_band: str
+    deadline: str | None = None
+    budget: str | None = None
+
+
+class MatchAccessState(str, Enum):
+    PREVIEW = "preview"
+    PENDING_UNLOCK = "pending_unlock"
+    UNLOCKED = "unlocked"
+    EXPIRED = "expired"
+
+
 class MatchResponse(BaseModel):
     request_id: str | None = None
     indexed_grants: int
@@ -123,6 +139,11 @@ class MatchResponse(BaseModel):
     degradation_reasons: list[str] = Field(default_factory=list)
     result_source: str = "snapshot_fallback"
     results: list[MatchResult]
+    preview_result: MatchResult | None = None
+    locked_result_teasers: list[LockedResultTeaser] = Field(default_factory=list)
+    locked_result_count: int = 0
+    access_state: MatchAccessState = MatchAccessState.PREVIEW
+    artifact_id: str | None = None
 
 
 class IndexStatus(BaseModel):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 import time
@@ -27,6 +28,7 @@ from .models import (
     IndexStatus,
     MatchRequest,
     MatchResponse,
+    MatchAccessState,
     ProfileResolveRequest,
     ProfileResolveResponse,
     ProfileFromWebsiteRequest,
@@ -35,6 +37,7 @@ from .models import (
 )
 from .observability import bind_request_context, capture_backend_exception, initialize_sentry
 from .openai_client import build_openai_client
+from .search_artifacts import SearchArtifact, SearchArtifactStore, build_locked_result_teaser
 from .profile_resolver import DemoProfileResolver, OpenAICompanyProfileExpander
 from .request_ids import resolve_request_id
 from .translation import GrantTranslationService, OpenAIGrantTranslator
@@ -49,6 +52,11 @@ FAVICON_SVG = (
     "</svg>"
 )
 MATCH_NOT_READY_ERROR_CODE = "INDEX_NOT_READY"
+
+
+def _build_search_fingerprint(company_description: str) -> str:
+    normalized = " ".join(company_description.split()).casefold()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def build_match_unavailable_error(status: IndexStatus, request_id: str | None = None) -> dict:
@@ -68,6 +76,42 @@ def build_application_brief_error(message: str, request_id: str | None = None) -
     if request_id is not None:
         payload["request_id"] = request_id
     return payload
+
+
+def _access_state_for_response(access) -> MatchAccessState:
+    status = getattr(access, "status", "")
+    if getattr(access, "has_access", False):
+        return MatchAccessState.UNLOCKED
+    if status == "expired":
+        return MatchAccessState.EXPIRED
+    if status in {"pending_unlock", "pending_payment", "requires_payment"}:
+        return MatchAccessState.PENDING_UNLOCK
+    return MatchAccessState.PREVIEW
+
+
+def build_preview_match_response(
+    *,
+    artifact: SearchArtifact,
+    access,
+    request_id: str | None,
+    base_response: MatchResponse,
+) -> MatchResponse:
+    access_state = _access_state_for_response(access)
+    has_access = access_state == MatchAccessState.UNLOCKED
+    results = artifact.full_results if has_access else ([artifact.preview_result] if artifact.preview_result else [])
+    locked_teasers = [] if has_access else [build_locked_result_teaser(result) for result in artifact.locked_results]
+    preview_result = artifact.preview_result
+    return base_response.model_copy(
+        update={
+            "request_id": request_id,
+            "results": results,
+            "preview_result": preview_result,
+            "locked_result_teasers": locked_teasers,
+            "locked_result_count": 0 if has_access else artifact.locked_result_count,
+            "access_state": access_state,
+            "artifact_id": artifact.id,
+        }
+    )
 
 
 def build_match_service(settings: Settings, app_state: AppState) -> MatchService:
@@ -212,6 +256,7 @@ def create_app(
     app.state.settings = active_settings
     app.state.app_state = app_state
     app.state.billing_client = build_billing_client(active_settings)
+    app.state.search_artifact_store = getattr(app_state, "search_artifact_store", SearchArtifactStore())
     app.state.match_service = match_service or build_match_service(active_settings, app_state)
     openai_client = build_openai_client(active_settings)
     app.state.translation_service = translation_service or GrantTranslationService(
@@ -469,14 +514,32 @@ def create_app(
             request_id=request_id,
             now=reference_time,
         )
-        return execution.match_response.model_copy(
-            update={
-                "request_id": request_id,
-                "indexed_grants": len(execution.all_grants),
-                "refresh_indexed_grants": len(execution.all_grants),
-                "result_source": execution.result_source,
-            }
+        search_artifact_store = app.state.search_artifact_store
+        fingerprint = _build_search_fingerprint(payload.company_description)
+        artifact = search_artifact_store.create_from_execution(
+            fingerprint=fingerprint,
+            company_description=payload.company_description,
+            execution=execution,
+            request_id=request_id,
+            now=reference_time,
         )
+        access = app.state.billing_client.get_artifact_access(
+            artifact_id=artifact.id,
+            fingerprint=artifact.fingerprint,
+        )
+        response = build_preview_match_response(
+            artifact=artifact,
+            access=access,
+            request_id=request_id,
+            base_response=execution.match_response.model_copy(
+                update={
+                    "indexed_grants": len(execution.all_grants),
+                    "refresh_indexed_grants": len(execution.all_grants),
+                    "result_source": execution.result_source,
+                }
+            ),
+        )
+        return response
 
     @app.post("/api/application-brief", response_model=ApplicationBriefResponse)
     def application_brief(
