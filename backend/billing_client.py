@@ -130,20 +130,65 @@ class HttpBillingClient:
     def _compact_values(values: dict[str, object | None]) -> dict[str, object]:
         return {key: value for key, value in values.items() if value is not None}
 
-    def _request(self, method: str, path: str, *, json: dict[str, object] | None = None, params: dict[str, object] | None = None) -> dict:
-        response = self.session.request(
-            method,
-            f"{self.base_url}{path}",
-            headers={"Authorization": f"Bearer {self.shared_token}"},
-            json=json,
-            params=self._compact_values(params or {}),
-            timeout=self.timeout_seconds,
-        )
-        response.raise_for_status()
-        payload = response.json()
+    @staticmethod
+    def _require_object(payload: object, *, context: str) -> dict[str, object]:
         if not isinstance(payload, dict):
-            raise BillingServiceError("billing service returned a non-object response")
+            raise BillingServiceError(f"{context}: expected JSON object")
         return payload
+
+    @staticmethod
+    def _require_str(payload: dict[str, object], key: str, *, context: str) -> str:
+        value = payload.get(key)
+        if not isinstance(value, str):
+            raise BillingServiceError(f"{context}: expected string field '{key}'")
+        return value
+
+    @staticmethod
+    def _require_bool(payload: dict[str, object], key: str, *, context: str) -> bool:
+        value = payload.get(key)
+        if not isinstance(value, bool):
+            raise BillingServiceError(f"{context}: expected boolean field '{key}'")
+        return value
+
+    @staticmethod
+    def _require_int(payload: dict[str, object], key: str, *, context: str) -> int:
+        value = payload.get(key)
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise BillingServiceError(f"{context}: expected integer field '{key}'")
+        return value
+
+    @staticmethod
+    def _require_optional_str(payload: dict[str, object], key: str, *, context: str) -> str | None:
+        if key not in payload or payload[key] is None:
+            return None
+        value = payload[key]
+        if not isinstance(value, str):
+            raise BillingServiceError(f"{context}: expected string field '{key}' or null")
+        return value
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: dict[str, object] | None = None,
+        params: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        try:
+            response = self.session.request(
+                method,
+                f"{self.base_url}{path}",
+                headers={"Authorization": f"Bearer {self.shared_token}"},
+                json=json,
+                params=self._compact_values(params or {}),
+                timeout=self.timeout_seconds,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except (requests.RequestException, ValueError, TypeError) as exc:
+            raise BillingServiceError("billing service request failed") from exc
+
+        return self._require_object(payload, context="billing service response")
 
     def create_guest_unlock_checkout(
         self,
@@ -161,9 +206,7 @@ class HttpBillingClient:
                 "email": email,
             },
         )
-        checkout_url = payload.get("checkout_url")
-        if not isinstance(checkout_url, str):
-            raise BillingServiceError("billing service response missing checkout_url")
+        checkout_url = self._require_str(payload, "checkout_url", context="guest unlock checkout")
         return CheckoutSessionPayload(checkout_url=checkout_url)
 
     def create_subscription_checkout(
@@ -182,9 +225,7 @@ class HttpBillingClient:
                 "cancel_url": cancel_url,
             },
         )
-        checkout_url = payload.get("checkout_url")
-        if not isinstance(checkout_url, str):
-            raise BillingServiceError("billing service response missing checkout_url")
+        checkout_url = self._require_str(payload, "checkout_url", context="subscription checkout")
         return CheckoutSessionPayload(checkout_url=checkout_url)
 
     def get_artifact_access(
@@ -203,9 +244,9 @@ class HttpBillingClient:
             },
         )
         return ArtifactAccessPayload(
-            has_access=bool(payload.get("has_access", False)),
-            status=str(payload.get("status", "unknown")),
-            expires_at=payload.get("expires_at") if isinstance(payload.get("expires_at"), str) else None,
+            has_access=self._require_bool(payload, "has_access", context="artifact access"),
+            status=self._require_str(payload, "status", context="artifact access"),
+            expires_at=self._require_optional_str(payload, "expires_at", context="artifact access"),
         )
 
     def consume_credit_unlock(
@@ -224,14 +265,13 @@ class HttpBillingClient:
                 "fingerprint": fingerprint,
             },
         )
-        return CreditUnlockPayload(consumed=bool(payload.get("consumed", False)))
+        return CreditUnlockPayload(consumed=self._require_bool(payload, "consumed", context="credit unlock"))
 
     def get_account_dashboard(self, *, email: str) -> AccountDashboardPayload:
         payload = self._request("GET", "/v1/account/dashboard", params={"email": email})
-        credits_remaining = payload.get("credits_remaining")
         return AccountDashboardPayload(
-            credits_remaining=credits_remaining if isinstance(credits_remaining, int) else None,
-            dashboard_url=payload.get("dashboard_url") if isinstance(payload.get("dashboard_url"), str) else None,
+            credits_remaining=self._require_int(payload, "credits_remaining", context="account dashboard"),
+            dashboard_url=self._require_str(payload, "dashboard_url", context="account dashboard"),
         )
 
 
